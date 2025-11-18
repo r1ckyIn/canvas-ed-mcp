@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "canvas-ed-mcp": {
+      "command": "python",
+      "args": [
+        "/your/full/path/to/canvas_ed_mcp.py"
+      ],
+      "env": {
+        "CANVAS_API_TOKEN": "your_canvas_api_token_here",
+        "ED_API_TOKEN": "your_ed_api_token_here"
+      }
+    }
+  }
+}
