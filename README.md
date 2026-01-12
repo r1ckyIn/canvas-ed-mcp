@@ -1,6 +1,19 @@
 # Canvas + Ed Discussion MCP Server
 
-An MCP server supporting both Canvas REST API and Ed Discussion API for accessing University of Sydney learning platforms.
+<div align="center">
+
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
+[![MCP](https://img.shields.io/badge/MCP-Server-FF6B35?style=flat-square)](https://modelcontextprotocol.io)
+[![USYD](https://img.shields.io/badge/USYD-CS-00205B?style=flat-square)](https://www.sydney.edu.au/)
+[![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
+
+**An MCP server for accessing Canvas LMS and Ed Discussion platforms**
+
+[English](#features) | [中文](#中文)
+
+</div>
+
+---
 
 ## Features
 
@@ -93,7 +106,7 @@ Get detailed content and replies for Ed thread ID 67890
 - Source: Canvas → Account → Settings → Approved Integrations → + New Access Token
 - Valid until: March 18, 2026
 
-### Ed Discussion API Token  
+### Ed Discussion API Token
 - Source: Ed Discussion → Settings → API
 - Note: Ed API is an unofficial beta version, endpoints may change
 
@@ -143,7 +156,7 @@ Ed Discussion API is unofficial and based on reverse engineering. Main endpoints
 
 Ed Discussion uses a special XML format to store thread content. The MCP server automatically parses this into plain text.
 
-## Project Files
+## Project Structure
 
 ```
 canvas-ed-mcp/
@@ -160,6 +173,60 @@ canvas-ed-mcp/
 - **DO NOT** share your tokens with others
 - Tokens are equivalent to your account password
 
+---
+
+## 中文
+
+### 功能特性
+
+#### Canvas 功能
+- **canvas_list_courses** - 获取 Canvas 课程列表
+- **canvas_get_course** - 获取课程详情
+- **canvas_list_announcements** - 获取课程公告
+- **canvas_list_assignments** - 获取作业列表
+
+#### Ed Discussion 功能
+- **ed_get_user_info** - 获取 Ed 用户信息（验证令牌）
+- **ed_list_courses** - 获取 Ed 课程列表
+- **ed_list_threads** - 获取讨论帖列表
+- **ed_get_thread** - 获取帖子详情和回复
+- **ed_search_threads** - 搜索帖子
+
+### 安装步骤
+
+#### 1. 安装依赖
+
+```bash
+pip install mcp httpx pydantic
+```
+
+#### 2. 配置 Claude Desktop
+
+编辑 Claude Desktop 配置文件：
+
+- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+
+#### 3. 重启 Claude Desktop
+
+### 安全提醒
+
+- **不要** 将 API 令牌提交到版本控制系统
+- **不要** 与他人分享你的令牌
+- 令牌相当于你的账户密码
+
+---
+
 ## License
 
 For educational purposes only. Ed API is an unofficial beta version, use at your own risk.
+
+---
+
+## Author
+
+**Ricky** - CS Student @ University of Sydney
+
+[![GitHub](https://img.shields.io/badge/GitHub-r1ckyIn-181717?style=flat-square&logo=github)](https://github.com/r1ckyIn)
+
+Interested in Cloud Engineering & DevOps
