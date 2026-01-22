@@ -276,8 +276,8 @@ async def canvas_api_request(
             return _handle_canvas_error(e)
         except httpx.TimeoutException:
             return {"error": "Canvas request timed out. Please try again later."}
-        except Exception as e:
-            return {"error": f"Canvas request failed: {str(e)}"}
+        except Exception:
+            return {"error": "Canvas request failed. Please try again later."}
 
 
 def _handle_canvas_error(e: httpx.HTTPStatusError) -> Dict[str, str]:
@@ -334,8 +334,8 @@ async def ed_api_request(
             return _handle_ed_error(e)
         except httpx.TimeoutException:
             return {"error": "Ed request timed out. Please try again later."}
-        except Exception as e:
-            return {"error": f"Ed request failed: {str(e)}"}
+        except Exception:
+            return {"error": "Ed request failed. Please try again later."}
 
 
 def _handle_ed_error(e: httpx.HTTPStatusError) -> Dict[str, str]:
