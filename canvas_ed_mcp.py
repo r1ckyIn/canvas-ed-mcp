@@ -314,6 +314,36 @@ class GetPageInput(BaseModel):
     )
 
 
+class GetUnitOutlineUrlInput(BaseModel):
+    """Input parameters for getting Canvas Unit Outline URL"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    course_id: str = Field(
+        ...,
+        description="Canvas course ID",
+        min_length=1
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format"
+    )
+
+
+class FetchUnitOutlineInput(BaseModel):
+    """Input parameters for fetching and parsing a Unit Outline page"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    unit_outline_url: str = Field(
+        ...,
+        description="Unit Outline URL from canvas_get_unit_outline_url (e.g., https://sydney.edu.au/units/COMP3221/2026-S1C-ND-CC)",
+        min_length=1
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format"
+    )
+
+
 # ============================================================================
 # Input Models - Ed Discussion
 # ============================================================================
@@ -813,11 +843,111 @@ def format_page_detail_markdown(page: Dict) -> str:
     return "\n".join(lines)
 
 
+# ============================================================================
+# Unit Outline Parser
+# ============================================================================
+
+def parse_unit_outline_html(html: str) -> Dict[str, Any]:
+    """
+    Parse University of Sydney Unit Outline HTML to extract assessment structure.
+
+    Uses BeautifulSoup4 with verified selectors consistent across all faculties.
+    """
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return {
+            "error": "BeautifulSoup4 is not installed. Run: pip install beautifulsoup4"
+        }
+
+    soup = BeautifulSoup(html, 'html.parser')
+    result: Dict[str, Any] = {
+        "assessment_structure": [],
+        "learning_outcomes": [],
+        "course_description": ""
+    }
+
+    # Extract assessment structure from #assessment-table
+    table = soup.find('table', id='assessment-table')
+    if table:
+        rows = table.find_all('tr')
+        for row in rows:
+            cells = row.find_all('td')
+            if len(cells) >= 2:
+                name = cells[0].get_text(strip=True)
+                weight_text = cells[1].get_text(strip=True)
+                # Data rows have % in weight and don't start with "Outcomes"
+                if '%' in weight_text and not name.startswith('Outcomes'):
+                    assessment = {
+                        "name": name,
+                        "weight": weight_text,
+                    }
+                    if len(cells) > 2:
+                        assessment["due_date"] = cells[2].get_text(strip=True)
+                    if len(cells) > 3:
+                        assessment["length"] = cells[3].get_text(strip=True)
+                    if len(cells) > 4:
+                        assessment["ai_policy"] = cells[4].get_text(strip=True)
+                    result["assessment_structure"].append(assessment)
+
+    # Extract course description
+    desc_el = soup.find('div', class_='course-description')
+    if not desc_el:
+        desc_el = soup.find('meta', attrs={'name': 'description'})
+        if desc_el:
+            result["course_description"] = desc_el.get('content', '')
+    else:
+        result["course_description"] = desc_el.get_text(strip=True)
+
+    # Extract learning outcomes
+    outcomes_section = soup.find('div', id='learning-outcomes') or soup.find('div', class_='learning-outcomes')
+    if outcomes_section:
+        items = outcomes_section.find_all('li')
+        result["learning_outcomes"] = [li.get_text(strip=True) for li in items]
+
+    return result
+
+
+def format_unit_outline_markdown(outline_data: Dict[str, Any]) -> str:
+    """Format parsed Unit Outline data as Markdown"""
+    lines = ["# Unit Outline\n"]
+
+    if outline_data.get("course_description"):
+        lines.append(f"## Course Description\n")
+        lines.append(outline_data["course_description"])
+        lines.append("")
+
+    assessments = outline_data.get("assessment_structure", [])
+    if assessments:
+        lines.append("## Assessment Structure\n")
+        lines.append("| Assessment | Weight | Due Date | Length | AI Policy |")
+        lines.append("|------------|--------|----------|--------|-----------|")
+        for a in assessments:
+            name = a.get("name", "")
+            weight = a.get("weight", "")
+            due = a.get("due_date", "")
+            length = a.get("length", "")
+            ai = a.get("ai_policy", "")
+            lines.append(f"| {name} | {weight} | {due} | {length} | {ai} |")
+        lines.append("")
+    else:
+        lines.append("*No assessment structure found.*\n")
+
+    outcomes = outline_data.get("learning_outcomes", [])
+    if outcomes:
+        lines.append("## Learning Outcomes\n")
+        for j, outcome in enumerate(outcomes, 1):
+            lines.append(f"{j}. {outcome}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def format_ed_courses_markdown(courses: List[Dict]) -> str:
     """Format Ed course list as Markdown"""
     if not courses:
         return "No Ed Discussion courses found."
-    
+
     lines = ["# My Ed Discussion Courses\n", f"*Total {len(courses)} courses*\n"]
     
     for i, course in enumerate(courses, 1):
@@ -1451,6 +1581,145 @@ async def canvas_list_module_items(params: ListModuleItemsInput) -> str:
     module_name = module.get('name', '') if isinstance(module, dict) and "error" not in module else ''
 
     return format_module_items_markdown(result, module_name)
+
+
+# ============================================================================
+# MCP Tools - Canvas Unit Outline
+# ============================================================================
+
+@mcp.tool(
+    name="canvas_get_unit_outline_url",
+    annotations={
+        "title": "Get Canvas Unit Outline URL",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def canvas_get_unit_outline_url(params: GetUnitOutlineUrlInput) -> str:
+    """
+    Get the Unit Outline URL for a Canvas course (University of Sydney).
+
+    Two-step process:
+    1. Find the "Unit Outline" tab in course tabs
+    2. Extract the sydney.edu.au URL from the external tool configuration
+
+    Args:
+        params (GetUnitOutlineUrlInput): Input parameters
+
+    Returns:
+        str: Unit Outline URL information (Markdown or JSON format)
+    """
+    # Step 1: Get course tabs and find Unit Outline
+    tabs = await canvas_api_request(f"/courses/{params.course_id}/tabs")
+
+    if isinstance(tabs, dict) and "error" in tabs:
+        return f"Error: {tabs['error']}"
+
+    outline_tab = None
+    if isinstance(tabs, list):
+        for tab in tabs:
+            label = tab.get('label', '')
+            if 'Unit Outline' in label:
+                outline_tab = tab
+                break
+
+    if not outline_tab:
+        return "Error: No Unit Outline tab found for this course. The course may not have a Unit Outline configured."
+
+    # Step 2: Extract tool_id from tab id (format: "context_external_tool_{tool_id}")
+    tab_id = str(outline_tab.get('id', ''))
+    tool_id = tab_id.replace('context_external_tool_', '')
+
+    if not tool_id or tool_id == tab_id:
+        return f"Error: Could not extract tool ID from tab. Tab ID: {tab_id}"
+
+    # Step 3: Get external tool details for the URL
+    tool = await canvas_api_request(f"/courses/{params.course_id}/external_tools/{tool_id}")
+
+    if isinstance(tool, dict) and "error" in tool:
+        return f"Error: {tool['error']}"
+
+    custom_fields = tool.get('custom_fields', {})
+    unit_outline_url = custom_fields.get('url', '')
+
+    if not unit_outline_url:
+        return "Error: Unit Outline URL not found in external tool configuration."
+
+    if params.response_format == ResponseFormat.JSON:
+        return json.dumps({
+            "unit_outline_url": unit_outline_url,
+            "tab_label": outline_tab.get('label', ''),
+            "tool_id": tool_id,
+            "custom_fields": custom_fields
+        }, indent=2, ensure_ascii=False)
+
+    lines = ["# Unit Outline URL\n"]
+    lines.append(f"- **Tab**: {outline_tab.get('label', '')}")
+    lines.append(f"- **URL**: {unit_outline_url}")
+    lines.append(f"\nUse `fetch_unit_outline` with this URL to get the assessment structure.")
+
+    return "\n".join(lines)
+
+
+@mcp.tool(
+    name="fetch_unit_outline",
+    annotations={
+        "title": "Fetch and Parse Unit Outline",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def fetch_unit_outline(params: FetchUnitOutlineInput) -> str:
+    """
+    Fetch and parse a University of Sydney Unit Outline page.
+
+    Extracts assessment structure (name, weight, due date, length, AI policy),
+    learning outcomes, and course description from the HTML page.
+    No authentication required.
+
+    Args:
+        params (FetchUnitOutlineInput): Input parameters
+
+    Returns:
+        str: Parsed Unit Outline data (Markdown or JSON format)
+    """
+    # Fetch HTML without authentication
+    async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
+        try:
+            response = await client.get(params.unit_outline_url)
+            response.raise_for_status()
+            html = response.text
+        except httpx.HTTPStatusError as e:
+            return f"Error: Failed to fetch Unit Outline (HTTP {e.response.status_code})"
+        except httpx.TimeoutException:
+            return "Error: Unit Outline request timed out."
+        except Exception:
+            return "Error: Failed to fetch Unit Outline page."
+
+    # Parse HTML
+    outline_data = parse_unit_outline_html(html)
+
+    if "error" in outline_data:
+        return f"Error: {outline_data['error']}"
+
+    # Fallback: if no assessment data extracted, return truncated HTML
+    if not outline_data.get("assessment_structure"):
+        truncated = html[:3000] if len(html) > 3000 else html
+        fallback_text = strip_html(truncated)
+        return (
+            "# Unit Outline (Raw)\n\n"
+            "*Could not extract structured assessment data. Showing raw content:*\n\n"
+            f"{fallback_text}"
+        )
+
+    if params.response_format == ResponseFormat.JSON:
+        return json.dumps(outline_data, indent=2, ensure_ascii=False)
+
+    return format_unit_outline_markdown(outline_data)
 
 
 # ============================================================================
