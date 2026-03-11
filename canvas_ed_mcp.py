@@ -6,6 +6,7 @@ University of Sydney Canvas and Ed Discussion Integration
 MCP server supporting both Canvas REST API and Ed Discussion API.
 """
 
+import asyncio
 import json
 import os
 import re
@@ -34,6 +35,9 @@ ED_API_TOKEN = os.getenv("ED_API_TOKEN", "")
 TIMEOUT_SECONDS = 30
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
+
+# Canvas External Tool tab ID prefix
+CANVAS_EXTERNAL_TOOL_TAB_PREFIX = "context_external_tool_"
 
 # ============================================================================
 # Initialize MCP Server
@@ -662,9 +666,25 @@ def _handle_ed_error(e: httpx.HTTPStatusError) -> Dict[str, str]:
     return {"error": error_msg}
 
 
+async def get_course_name(course_id: str) -> str:
+    """Fetch course name from Canvas API with error handling"""
+    course = await canvas_api_request(f"/courses/{course_id}")
+    if isinstance(course, dict) and "error" not in course:
+        return course.get('name', '')
+    return ''
+
+
 # ============================================================================
 # Formatting Utilities
 # ============================================================================
+
+def format_file_size(size: int) -> str:
+    """Format file size in bytes to human-readable string"""
+    if size >= 1_048_576:
+        return f"{size / 1_048_576:.1f} MB"
+    if size >= 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size} B"
 
 def format_datetime(dt_string: Optional[str]) -> str:
     """Format datetime string"""
@@ -904,13 +924,7 @@ def format_files_markdown(files: List[Dict], course_name: str = "") -> str:
         content_type = f.get('content-type', f.get('content_type', ''))
         created_at = format_datetime(f.get('created_at'))
 
-        # Human-readable file size
-        if size >= 1_048_576:
-            size_str = f"{size / 1_048_576:.1f} MB"
-        elif size >= 1024:
-            size_str = f"{size / 1024:.1f} KB"
-        else:
-            size_str = f"{size} B"
+        size_str = format_file_size(size)
 
         lines.append(f"### {i}. {name}")
         lines.append(f"- **File ID**: {file_id}")
@@ -1434,16 +1448,14 @@ async def canvas_list_announcements(params: ListAnnouncementsInput) -> str:
     }
     
     result = await canvas_api_request("/announcements", params=api_params)
-    
+
     if isinstance(result, dict) and "error" in result:
         return f"Error: {result['error']}"
-    
+
     if params.response_format == ResponseFormat.JSON:
         return json.dumps(result, indent=2, ensure_ascii=False)
-    
-    course = await canvas_api_request(f"/courses/{params.course_id}")
-    course_name = course.get('name', '') if isinstance(course, dict) else ''
-    
+
+    course_name = await get_course_name(params.course_id)
     return format_announcements_markdown(result, course_name)
 
 
@@ -1476,16 +1488,14 @@ async def canvas_list_assignments(params: ListAssignmentsInput) -> str:
         api_params["include[]"] = ["submission"]
     
     result = await canvas_api_request(f"/courses/{params.course_id}/assignments", params=api_params)
-    
+
     if isinstance(result, dict) and "error" in result:
         return f"Error: {result['error']}"
-    
+
     if params.response_format == ResponseFormat.JSON:
         return json.dumps(result, indent=2, ensure_ascii=False)
-    
-    course = await canvas_api_request(f"/courses/{params.course_id}")
-    course_name = course.get('name', '') if isinstance(course, dict) else ''
-    
+
+    course_name = await get_course_name(params.course_id)
     return format_assignments_markdown(result, course_name)
 
 
@@ -1543,17 +1553,19 @@ async def canvas_get_grades(params: GetGradesInput) -> str:
     if isinstance(enrollments, dict) and "error" in enrollments:
         return f"Error: {enrollments['error']}"
 
-    # Get assignment groups if requested and course_id specified
+    # Get assignment groups and course name in parallel
     assignment_groups = None
     course_name = ""
     if params.course_id:
-        course = await canvas_api_request(f"/courses/{params.course_id}")
-        course_name = course.get('name', '') if isinstance(course, dict) and "error" not in course else ''
-
         if params.include_assignment_groups:
-            groups = await canvas_api_request(f"/courses/{params.course_id}/assignment_groups")
+            course_name, groups = await asyncio.gather(
+                get_course_name(params.course_id),
+                canvas_api_request(f"/courses/{params.course_id}/assignment_groups")
+            )
             if isinstance(groups, list):
                 assignment_groups = groups
+        else:
+            course_name = await get_course_name(params.course_id)
 
     if params.response_format == ResponseFormat.JSON:
         result_data = {"enrollments": enrollments}
@@ -1603,9 +1615,7 @@ async def canvas_list_files(params: ListFilesInput) -> str:
     if params.response_format == ResponseFormat.JSON:
         return json.dumps(result, indent=2, ensure_ascii=False)
 
-    course = await canvas_api_request(f"/courses/{params.course_id}")
-    course_name = course.get('name', '') if isinstance(course, dict) and "error" not in course else ''
-
+    course_name = await get_course_name(params.course_id)
     return format_files_markdown(result, course_name)
 
 
@@ -1647,12 +1657,7 @@ async def canvas_get_file_content(params: GetFileContentInput) -> str:
     created_at = format_datetime(result.get('created_at'))
     updated_at = format_datetime(result.get('updated_at'))
 
-    if size >= 1_048_576:
-        size_str = f"{size / 1_048_576:.1f} MB"
-    elif size >= 1024:
-        size_str = f"{size / 1024:.1f} KB"
-    else:
-        size_str = f"{size} B"
+    size_str = format_file_size(size)
 
     lines = [f"# {name}\n"]
     lines.append(f"- **File ID**: {params.file_id}")
@@ -1703,9 +1708,7 @@ async def canvas_list_pages(params: ListPagesInput) -> str:
     if params.response_format == ResponseFormat.JSON:
         return json.dumps(result, indent=2, ensure_ascii=False)
 
-    course = await canvas_api_request(f"/courses/{params.course_id}")
-    course_name = course.get('name', '') if isinstance(course, dict) and "error" not in course else ''
-
+    course_name = await get_course_name(params.course_id)
     return format_pages_markdown(result, course_name)
 
 
@@ -1784,9 +1787,7 @@ async def canvas_list_modules(params: ListModulesInput) -> str:
     if params.response_format == ResponseFormat.JSON:
         return json.dumps(result, indent=2, ensure_ascii=False)
 
-    course = await canvas_api_request(f"/courses/{params.course_id}")
-    course_name = course.get('name', '') if isinstance(course, dict) and "error" not in course else ''
-
+    course_name = await get_course_name(params.course_id)
     return format_modules_markdown(result, course_name)
 
 
@@ -1882,7 +1883,7 @@ async def canvas_get_unit_outline_url(params: GetUnitOutlineUrlInput) -> str:
 
     # Step 2: Extract tool_id from tab id (format: "context_external_tool_{tool_id}")
     tab_id = str(outline_tab.get('id', ''))
-    tool_id = tab_id.replace('context_external_tool_', '')
+    tool_id = tab_id.replace(CANVAS_EXTERNAL_TOOL_TAB_PREFIX, '')
 
     if not tool_id or tool_id == tab_id:
         return f"Error: Could not extract tool ID from tab. Tab ID: {tab_id}"
