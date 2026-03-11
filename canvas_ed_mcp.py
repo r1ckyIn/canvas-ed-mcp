@@ -200,6 +200,120 @@ class ListModuleItemsInput(BaseModel):
     )
 
 
+class GetGradesInput(BaseModel):
+    """Input parameters for getting Canvas grades"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    course_id: Optional[str] = Field(
+        default=None,
+        description="Canvas course ID. If not provided, returns grades for all courses.",
+        min_length=1
+    )
+    include_assignment_groups: bool = Field(
+        default=True,
+        description="Whether to include assignment group weights (only when course_id is specified)"
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format"
+    )
+
+
+class ListFilesInput(BaseModel):
+    """Input parameters for getting Canvas course files"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    course_id: str = Field(
+        ...,
+        description="Canvas course ID",
+        min_length=1
+    )
+    content_types: Optional[List[str]] = Field(
+        default=None,
+        description="Filter by content types (e.g., ['application/pdf', 'image/png'])"
+    )
+    sort: Optional[str] = Field(
+        default=None,
+        description="Sort order: 'name', 'size', 'created_at', 'updated_at'"
+    )
+    search_term: Optional[str] = Field(
+        default=None,
+        description="Search term to filter files by name"
+    )
+    limit: int = Field(
+        default=DEFAULT_PAGE_SIZE,
+        description="Number of files to return",
+        ge=1, le=MAX_PAGE_SIZE
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format"
+    )
+
+
+class GetFileContentInput(BaseModel):
+    """Input parameters for getting Canvas file details"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    file_id: str = Field(
+        ...,
+        description="Canvas file ID",
+        min_length=1
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format"
+    )
+
+
+class ListPagesInput(BaseModel):
+    """Input parameters for getting Canvas course wiki pages"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    course_id: str = Field(
+        ...,
+        description="Canvas course ID",
+        min_length=1
+    )
+    sort: Optional[str] = Field(
+        default=None,
+        description="Sort order: 'title', 'created_at', 'updated_at'"
+    )
+    search_term: Optional[str] = Field(
+        default=None,
+        description="Search term to filter pages by title"
+    )
+    limit: int = Field(
+        default=DEFAULT_PAGE_SIZE,
+        description="Number of pages to return",
+        ge=1, le=MAX_PAGE_SIZE
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format"
+    )
+
+
+class GetPageInput(BaseModel):
+    """Input parameters for getting a Canvas wiki page"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    course_id: str = Field(
+        ...,
+        description="Canvas course ID",
+        min_length=1
+    )
+    page_url_or_id: str = Field(
+        ...,
+        description="Page URL slug or page ID",
+        min_length=1
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format"
+    )
+
+
 # ============================================================================
 # Input Models - Ed Discussion
 # ============================================================================
@@ -581,6 +695,124 @@ def format_module_items_markdown(items: List[Dict], module_name: str = "") -> st
     return "\n".join(lines)
 
 
+def format_grades_markdown(
+    enrollments: List[Dict],
+    assignment_groups: Optional[List[Dict]] = None,
+    course_name: str = ""
+) -> str:
+    """Format Canvas grades as Markdown"""
+    if not enrollments:
+        return "No enrollment/grade data found."
+
+    lines = []
+    if course_name:
+        lines.append(f"# {course_name} - Grades\n")
+    else:
+        lines.append("# My Grades\n")
+
+    for enrollment in enrollments:
+        grades = enrollment.get('grades', {})
+        if not grades:
+            continue
+
+        e_course_id = enrollment.get('course_id', '')
+        current_score = grades.get('current_score')
+        final_score = grades.get('final_score')
+        current_grade = grades.get('current_grade')
+
+        if not course_name:
+            lines.append(f"## Course ID: {e_course_id}")
+
+        if current_score is not None:
+            lines.append(f"- **Current Score**: {current_score}%")
+        if current_grade:
+            lines.append(f"- **Current Grade**: {current_grade}")
+        if final_score is not None:
+            lines.append(f"- **Final Score**: {final_score}% *(treats unsubmitted as 0)*")
+        lines.append("")
+
+    if assignment_groups:
+        lines.append("## Assignment Group Weights\n")
+        lines.append("| Group | Weight |")
+        lines.append("|-------|--------|")
+        for group in assignment_groups:
+            name = group.get('name', 'Unknown')
+            weight = group.get('group_weight', 0)
+            lines.append(f"| {name} | {weight}% |")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def format_files_markdown(files: List[Dict], course_name: str = "") -> str:
+    """Format Canvas file list as Markdown"""
+    if not files:
+        return f"Course {course_name} has no files." if course_name else "No files found."
+
+    title = f"# {course_name} - Files\n" if course_name else "# Course Files\n"
+    lines = [title, f"*Total {len(files)} files*\n"]
+
+    for i, f in enumerate(files, 1):
+        name = f.get('display_name', f.get('filename', 'Unnamed'))
+        file_id = f.get('id', '')
+        size = f.get('size', 0)
+        content_type = f.get('content-type', f.get('content_type', ''))
+        created_at = format_datetime(f.get('created_at'))
+
+        # Human-readable file size
+        if size >= 1_048_576:
+            size_str = f"{size / 1_048_576:.1f} MB"
+        elif size >= 1024:
+            size_str = f"{size / 1024:.1f} KB"
+        else:
+            size_str = f"{size} B"
+
+        lines.append(f"### {i}. {name}")
+        lines.append(f"- **File ID**: {file_id}")
+        lines.append(f"- **Size**: {size_str}")
+        if content_type:
+            lines.append(f"- **Type**: {content_type}")
+        lines.append(f"- **Created**: {created_at}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def format_pages_markdown(pages: List[Dict], course_name: str = "") -> str:
+    """Format Canvas wiki page list as Markdown"""
+    if not pages:
+        return f"Course {course_name} has no pages." if course_name else "No pages found."
+
+    title = f"# {course_name} - Pages\n" if course_name else "# Course Pages\n"
+    lines = [title, f"*Total {len(pages)} pages*\n"]
+
+    for i, page in enumerate(pages, 1):
+        page_title = page.get('title', 'Untitled')
+        page_url = page.get('url', '')
+        updated_at = format_datetime(page.get('updated_at'))
+
+        lines.append(f"### {i}. {page_title}")
+        lines.append(f"- **Slug**: {page_url}")
+        lines.append(f"- **Updated**: {updated_at}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def format_page_detail_markdown(page: Dict) -> str:
+    """Format single Canvas wiki page as Markdown"""
+    page_title = page.get('title', 'Untitled')
+    updated_at = format_datetime(page.get('updated_at'))
+    body = strip_html(page.get('body', ''))
+
+    lines = [f"# {page_title}\n"]
+    lines.append(f"**Updated**: {updated_at}\n")
+    lines.append("---\n")
+    lines.append(body if body else "*No content*")
+
+    return "\n".join(lines)
+
+
 def format_ed_courses_markdown(courses: List[Dict]) -> str:
     """Format Ed course list as Markdown"""
     if not courses:
@@ -875,6 +1107,255 @@ async def canvas_list_assignments(params: ListAssignmentsInput) -> str:
     course_name = course.get('name', '') if isinstance(course, dict) else ''
     
     return format_assignments_markdown(result, course_name)
+
+
+# ============================================================================
+# MCP Tools - Canvas Grades, Files, Pages
+# ============================================================================
+
+@mcp.tool(
+    name="canvas_get_grades",
+    annotations={
+        "title": "Get Canvas Grades",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def canvas_get_grades(params: GetGradesInput) -> str:
+    """
+    Get current user's grades on Canvas.
+
+    Returns current_score (based on graded items), final_score (treats unsubmitted as 0),
+    and current_grade (letter grade). Optionally includes assignment group weights.
+
+    Args:
+        params (GetGradesInput): Input parameters
+
+    Returns:
+        str: Grade information (Markdown or JSON format)
+    """
+    if params.course_id:
+        # Grades for a specific course
+        enrollment_params: Dict[str, Any] = {
+            "user_id": "self",
+            "type[]": "StudentEnrollment"
+        }
+        enrollments = await canvas_api_request(
+            f"/courses/{params.course_id}/enrollments",
+            params=enrollment_params
+        )
+    else:
+        # Grades for all courses
+        enrollment_params = {
+            "type[]": "StudentEnrollment",
+            "state[]": "active",
+            "per_page": MAX_PAGE_SIZE
+        }
+        enrollments = await canvas_api_request(
+            "/users/self/enrollments",
+            params=enrollment_params
+        )
+
+    if isinstance(enrollments, dict) and "error" in enrollments:
+        return f"Error: {enrollments['error']}"
+
+    # Get assignment groups if requested and course_id specified
+    assignment_groups = None
+    course_name = ""
+    if params.course_id:
+        course = await canvas_api_request(f"/courses/{params.course_id}")
+        course_name = course.get('name', '') if isinstance(course, dict) and "error" not in course else ''
+
+        if params.include_assignment_groups:
+            groups = await canvas_api_request(f"/courses/{params.course_id}/assignment_groups")
+            if isinstance(groups, list):
+                assignment_groups = groups
+
+    if params.response_format == ResponseFormat.JSON:
+        result_data = {"enrollments": enrollments}
+        if assignment_groups:
+            result_data["assignment_groups"] = assignment_groups
+        return json.dumps(result_data, indent=2, ensure_ascii=False)
+
+    return format_grades_markdown(enrollments, assignment_groups, course_name)
+
+
+@mcp.tool(
+    name="canvas_list_files",
+    annotations={
+        "title": "Get Canvas Course Files",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def canvas_list_files(params: ListFilesInput) -> str:
+    """
+    Get the file list for a Canvas course.
+
+    Args:
+        params (ListFilesInput): Input parameters
+
+    Returns:
+        str: File list (Markdown or JSON format)
+    """
+    api_params: Dict[str, Any] = {
+        "per_page": params.limit
+    }
+
+    if params.content_types:
+        api_params["content_types[]"] = params.content_types
+    if params.sort:
+        api_params["sort"] = params.sort
+    if params.search_term:
+        api_params["search_term"] = params.search_term
+
+    result = await canvas_api_request(f"/courses/{params.course_id}/files", params=api_params)
+
+    if isinstance(result, dict) and "error" in result:
+        return f"Error: {result['error']}"
+
+    if params.response_format == ResponseFormat.JSON:
+        return json.dumps(result, indent=2, ensure_ascii=False)
+
+    course = await canvas_api_request(f"/courses/{params.course_id}")
+    course_name = course.get('name', '') if isinstance(course, dict) and "error" not in course else ''
+
+    return format_files_markdown(result, course_name)
+
+
+@mcp.tool(
+    name="canvas_get_file_content",
+    annotations={
+        "title": "Get Canvas File Details",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def canvas_get_file_content(params: GetFileContentInput) -> str:
+    """
+    Get file metadata and download URL for a Canvas file.
+
+    Returns file details including display name, size, content type, and download URL.
+    Does not download the binary content.
+
+    Args:
+        params (GetFileContentInput): Input parameters
+
+    Returns:
+        str: File details (Markdown or JSON format)
+    """
+    result = await canvas_api_request(f"/files/{params.file_id}")
+
+    if isinstance(result, dict) and "error" in result:
+        return f"Error: {result['error']}"
+
+    if params.response_format == ResponseFormat.JSON:
+        return json.dumps(result, indent=2, ensure_ascii=False)
+
+    name = result.get('display_name', result.get('filename', 'Unknown'))
+    size = result.get('size', 0)
+    content_type = result.get('content-type', result.get('content_type', ''))
+    url = result.get('url', '')
+    created_at = format_datetime(result.get('created_at'))
+    updated_at = format_datetime(result.get('updated_at'))
+
+    if size >= 1_048_576:
+        size_str = f"{size / 1_048_576:.1f} MB"
+    elif size >= 1024:
+        size_str = f"{size / 1024:.1f} KB"
+    else:
+        size_str = f"{size} B"
+
+    lines = [f"# {name}\n"]
+    lines.append(f"- **File ID**: {params.file_id}")
+    lines.append(f"- **Size**: {size_str}")
+    lines.append(f"- **Type**: {content_type}")
+    lines.append(f"- **Created**: {created_at}")
+    lines.append(f"- **Updated**: {updated_at}")
+    if url:
+        lines.append(f"- **Download URL**: {url}")
+
+    return "\n".join(lines)
+
+
+@mcp.tool(
+    name="canvas_list_pages",
+    annotations={
+        "title": "Get Canvas Course Pages",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def canvas_list_pages(params: ListPagesInput) -> str:
+    """
+    Get the wiki page list for a Canvas course.
+
+    Args:
+        params (ListPagesInput): Input parameters
+
+    Returns:
+        str: Page list (Markdown or JSON format)
+    """
+    api_params: Dict[str, Any] = {
+        "per_page": params.limit
+    }
+
+    if params.sort:
+        api_params["sort"] = params.sort
+    if params.search_term:
+        api_params["search_term"] = params.search_term
+
+    result = await canvas_api_request(f"/courses/{params.course_id}/pages", params=api_params)
+
+    if isinstance(result, dict) and "error" in result:
+        return f"Error: {result['error']}"
+
+    if params.response_format == ResponseFormat.JSON:
+        return json.dumps(result, indent=2, ensure_ascii=False)
+
+    course = await canvas_api_request(f"/courses/{params.course_id}")
+    course_name = course.get('name', '') if isinstance(course, dict) and "error" not in course else ''
+
+    return format_pages_markdown(result, course_name)
+
+
+@mcp.tool(
+    name="canvas_get_page",
+    annotations={
+        "title": "Get Canvas Page Content",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def canvas_get_page(params: GetPageInput) -> str:
+    """
+    Get the full content of a Canvas wiki page.
+
+    Args:
+        params (GetPageInput): Input parameters
+
+    Returns:
+        str: Page content (Markdown or JSON format)
+    """
+    result = await canvas_api_request(f"/courses/{params.course_id}/pages/{params.page_url_or_id}")
+
+    if isinstance(result, dict) and "error" in result:
+        return f"Error: {result['error']}"
+
+    if params.response_format == ResponseFormat.JSON:
+        return json.dumps(result, indent=2, ensure_ascii=False)
+
+    return format_page_detail_markdown(result)
 
 
 # ============================================================================
