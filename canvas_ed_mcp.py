@@ -66,6 +66,14 @@ class ThreadFilter(str, Enum):
     STARRED = "starred"
 
 
+class ThreadSort(str, Enum):
+    """Ed Discussion thread sort order"""
+    NEW = "new"
+    OLD = "old"
+    TOP = "top"
+    HOT = "hot"
+
+
 # ============================================================================
 # Input Models - Canvas
 # ============================================================================
@@ -344,6 +352,52 @@ class FetchUnitOutlineInput(BaseModel):
     )
 
 
+class ListCalendarInput(BaseModel):
+    """Input parameters for getting Canvas calendar events"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    context_codes: Optional[List[str]] = Field(
+        default=None,
+        description="Course context codes to filter (e.g., ['course_12345']). If not provided, returns events for all courses."
+    )
+    event_type: Optional[str] = Field(
+        default=None,
+        description="Event type filter: 'event' (calendar events) or 'assignment' (assignment due dates)"
+    )
+    start_date: Optional[str] = Field(
+        default=None,
+        description="Start date for range filter (ISO 8601 format, e.g., '2026-03-01')"
+    )
+    end_date: Optional[str] = Field(
+        default=None,
+        description="End date for range filter (ISO 8601 format, e.g., '2026-06-30')"
+    )
+    limit: int = Field(
+        default=DEFAULT_PAGE_SIZE,
+        description="Number of events to return",
+        ge=1, le=MAX_PAGE_SIZE
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format"
+    )
+
+
+class GetSyllabusInput(BaseModel):
+    """Input parameters for getting Canvas course syllabus"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    course_id: str = Field(
+        ...,
+        description="Canvas course ID",
+        min_length=1
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format"
+    )
+
+
 # ============================================================================
 # Input Models - Ed Discussion
 # ============================================================================
@@ -371,7 +425,7 @@ class EdListCoursesInput(BaseModel):
 class EdListThreadsInput(BaseModel):
     """Input parameters for getting Ed Discussion thread list"""
     model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
-    
+
     course_id: int = Field(
         ...,
         description="Ed course ID (numeric ID, can be obtained from ed_list_courses)",
@@ -385,6 +439,19 @@ class EdListThreadsInput(BaseModel):
     filter_type: ThreadFilter = Field(
         default=ThreadFilter.ALL,
         description="Thread filter: 'all', 'unread', 'unanswered', 'starred'"
+    )
+    category: Optional[str] = Field(
+        default=None,
+        description="Filter by category (case-sensitive, e.g., 'General', 'Lectures', 'Labs')"
+    )
+    sort: ThreadSort = Field(
+        default=ThreadSort.NEW,
+        description="Sort order: 'new' (newest first), 'old' (oldest first), 'top' (most votes), 'hot' (trending)"
+    )
+    offset: int = Field(
+        default=0,
+        description="Pagination offset (0-based)",
+        ge=0
     )
     response_format: ResponseFormat = Field(
         default=ResponseFormat.MARKDOWN,
@@ -976,6 +1043,45 @@ def format_unit_outline_markdown(outline_data: Dict[str, Any]) -> str:
         lines.append("## Learning Outcomes\n")
         for j, outcome in enumerate(outcomes, 1):
             lines.append(f"{j}. {outcome}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def format_calendar_markdown(events: List[Dict]) -> str:
+    """Format Canvas calendar events as Markdown"""
+    if not events:
+        return "No calendar events found."
+
+    lines = ["# Calendar Events\n", f"*Total {len(events)} events*\n"]
+
+    for i, event in enumerate(events, 1):
+        title = event.get('title', 'Untitled Event')
+        event_type = event.get('type', 'event')
+        start_at = format_datetime(event.get('start_at'))
+        end_at = format_datetime(event.get('end_at'))
+        description = strip_html(event.get('description', ''))
+        context_name = event.get('context_name', '')
+
+        lines.append(f"### {i}. {title}")
+        if context_name:
+            lines.append(f"- **Course**: {context_name}")
+        lines.append(f"- **Type**: {event_type}")
+        lines.append(f"- **Start**: {start_at}")
+        if end_at != "Not set":
+            lines.append(f"- **End**: {end_at}")
+        if description:
+            if len(description) > 300:
+                description = description[:300] + "..."
+            lines.append(f"- **Description**: {description}")
+
+        # Assignment-specific fields
+        assignment = event.get('assignment', {})
+        if assignment:
+            points = assignment.get('points_possible')
+            if points is not None:
+                lines.append(f"- **Points**: {points}")
+
         lines.append("")
 
     return "\n".join(lines)
@@ -1857,6 +1963,105 @@ async def fetch_unit_outline(params: FetchUnitOutlineInput) -> str:
 
 
 # ============================================================================
+# MCP Tools - Canvas Calendar & Syllabus
+# ============================================================================
+
+@mcp.tool(
+    name="canvas_list_calendar",
+    annotations={
+        "title": "Get Canvas Calendar Events",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def canvas_list_calendar(params: ListCalendarInput) -> str:
+    """
+    Get calendar events and assignment due dates from Canvas.
+
+    Can filter by course, event type, and date range.
+
+    Args:
+        params (ListCalendarInput): Input parameters
+
+    Returns:
+        str: Calendar events (Markdown or JSON format)
+    """
+    api_params: Dict[str, Any] = {
+        "per_page": params.limit
+    }
+
+    if params.context_codes:
+        api_params["context_codes[]"] = params.context_codes
+    if params.event_type:
+        api_params["type"] = params.event_type
+    if params.start_date:
+        api_params["start_date"] = params.start_date
+    if params.end_date:
+        api_params["end_date"] = params.end_date
+
+    result = await canvas_api_request("/calendar_events", params=api_params)
+
+    if isinstance(result, dict) and "error" in result:
+        return f"Error: {result['error']}"
+
+    if params.response_format == ResponseFormat.JSON:
+        return json.dumps(result, indent=2, ensure_ascii=False)
+
+    return format_calendar_markdown(result)
+
+
+@mcp.tool(
+    name="canvas_get_syllabus",
+    annotations={
+        "title": "Get Canvas Course Syllabus",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def canvas_get_syllabus(params: GetSyllabusInput) -> str:
+    """
+    Get the syllabus for a Canvas course.
+
+    Returns the syllabus body content (HTML converted to plain text).
+
+    Args:
+        params (GetSyllabusInput): Input parameters
+
+    Returns:
+        str: Syllabus content (Markdown or JSON format)
+    """
+    api_params: Dict[str, Any] = {
+        "include[]": "syllabus_body"
+    }
+
+    result = await canvas_api_request(f"/courses/{params.course_id}", params=api_params)
+
+    if isinstance(result, dict) and "error" in result:
+        return f"Error: {result['error']}"
+
+    if params.response_format == ResponseFormat.JSON:
+        return json.dumps(result, indent=2, ensure_ascii=False)
+
+    course_name = result.get('name', 'Unknown Course')
+    syllabus_body = result.get('syllabus_body', '')
+
+    if not syllabus_body:
+        return f"Course {course_name} has no syllabus content."
+
+    syllabus_text = strip_html(syllabus_body)
+
+    lines = [f"# {course_name} - Syllabus\n"]
+    lines.append("---\n")
+    lines.append(syllabus_text)
+
+    return "\n".join(lines)
+
+
+# ============================================================================
 # MCP Tools - Ed Discussion
 # ============================================================================
 
@@ -1949,41 +2154,46 @@ async def ed_list_courses(params: EdListCoursesInput) -> str:
 async def ed_list_threads(params: EdListThreadsInput) -> str:
     """
     Get discussion thread list for a specific Ed course.
-    
+
     Can filter for unread, unanswered, or starred threads.
-    
+    Supports sorting by new/old/top/hot, category filtering, and pagination.
+
     Args:
         params (EdListThreadsInput): Input parameters
             - course_id: Ed course ID (obtained from ed_list_courses)
             - limit: Number to return
             - filter_type: Filter type
-    
+            - category: Filter by category (case-sensitive)
+            - sort: Sort order (new/old/top/hot)
+            - offset: Pagination offset
+
     Returns:
         str: Thread list
     """
-    api_params = {
+    api_params: Dict[str, Any] = {
         "limit": params.limit,
-        "sort": "new"
+        "sort": params.sort.value,
+        "offset": params.offset
     }
-    
+
     # Apply filter
-    if params.filter_type == ThreadFilter.UNREAD:
-        api_params["filter"] = "unread"
-    elif params.filter_type == ThreadFilter.UNANSWERED:
-        api_params["filter"] = "unanswered"
-    elif params.filter_type == ThreadFilter.STARRED:
-        api_params["filter"] = "starred"
-    
+    if params.filter_type != ThreadFilter.ALL:
+        api_params["filter"] = params.filter_type.value
+
+    # Apply category filter
+    if params.category:
+        api_params["category"] = params.category
+
     result = await ed_api_request(f"/courses/{params.course_id}/threads", params=api_params)
-    
+
     if isinstance(result, dict) and "error" in result:
         return f"Error: {result['error']}"
-    
+
     threads = result.get('threads', result) if isinstance(result, dict) else result
-    
+
     if params.response_format == ResponseFormat.JSON:
         return json.dumps(threads, indent=2, ensure_ascii=False)
-    
+
     return format_ed_threads_markdown(threads if isinstance(threads, list) else [])
 
 
