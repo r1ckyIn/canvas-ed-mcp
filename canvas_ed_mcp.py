@@ -127,7 +127,7 @@ class ListAnnouncementsInput(BaseModel):
 class ListAssignmentsInput(BaseModel):
     """Input parameters for getting Canvas course assignments"""
     model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
-    
+
     course_id: str = Field(
         ...,
         description="Canvas course ID",
@@ -141,6 +141,58 @@ class ListAssignmentsInput(BaseModel):
         default=DEFAULT_PAGE_SIZE,
         description="Number of assignments to return",
         ge=1, le=MAX_PAGE_SIZE
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format"
+    )
+
+
+class ListModulesInput(BaseModel):
+    """Input parameters for getting Canvas course modules"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    course_id: str = Field(
+        ...,
+        description="Canvas course ID",
+        min_length=1
+    )
+    include_items: bool = Field(
+        default=False,
+        description="Whether to inline module items in the response (include[]=items)"
+    )
+    search_term: Optional[str] = Field(
+        default=None,
+        description="Search term to filter modules by name"
+    )
+    limit: int = Field(
+        default=DEFAULT_PAGE_SIZE,
+        description="Number of modules to return",
+        ge=1, le=MAX_PAGE_SIZE
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format"
+    )
+
+
+class ListModuleItemsInput(BaseModel):
+    """Input parameters for getting items within a Canvas module"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    course_id: str = Field(
+        ...,
+        description="Canvas course ID",
+        min_length=1
+    )
+    module_id: str = Field(
+        ...,
+        description="Canvas module ID",
+        min_length=1
+    )
+    include_content_details: bool = Field(
+        default=False,
+        description="Whether to include content details like due dates (include[]=content_details)"
     )
     response_format: ResponseFormat = Field(
         default=ResponseFormat.MARKDOWN,
@@ -460,6 +512,75 @@ def format_assignments_markdown(assignments: List[Dict], course_name: str = "") 
     return "\n".join(lines)
 
 
+def format_modules_markdown(modules: List[Dict], course_name: str = "") -> str:
+    """Format Canvas module list as Markdown"""
+    if not modules:
+        return f"Course {course_name} has no modules." if course_name else "No modules found."
+
+    title = f"# {course_name} - Modules\n" if course_name else "# Course Modules\n"
+    lines = [title, f"*Total {len(modules)} modules*\n"]
+
+    for i, module in enumerate(modules, 1):
+        name = module.get('name', 'Unnamed Module')
+        position = module.get('position', i)
+        items_count = module.get('items_count', 0)
+        module_id = module.get('id', '')
+
+        lines.append(f"## {position}. {name}")
+        lines.append(f"- **Module ID**: {module_id}")
+        lines.append(f"- **Items**: {items_count}")
+
+        # Inline items when include_items was used
+        items = module.get('items', [])
+        if items:
+            lines.append("")
+            for item in items:
+                item_title = item.get('title', 'Untitled')
+                item_type = item.get('type', 'Unknown')
+                lines.append(f"  - [{item_type}] {item_title}")
+
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def format_module_items_markdown(items: List[Dict], module_name: str = "") -> str:
+    """Format Canvas module items as Markdown"""
+    if not items:
+        return f"Module {module_name} has no items." if module_name else "No module items found."
+
+    title = f"# {module_name} - Items\n" if module_name else "# Module Items\n"
+    lines = [title, f"*Total {len(items)} items*\n"]
+
+    for i, item in enumerate(items, 1):
+        item_title = item.get('title', 'Untitled')
+        item_type = item.get('type', 'Unknown')
+        item_id = item.get('id', '')
+        html_url = item.get('html_url', '')
+        external_url = item.get('external_url', '')
+
+        lines.append(f"### {i}. [{item_type}] {item_title}")
+        lines.append(f"- **Item ID**: {item_id}")
+        if html_url:
+            lines.append(f"- **URL**: {html_url}")
+        if external_url:
+            lines.append(f"- **External URL**: {external_url}")
+
+        # Content details if included
+        content_details = item.get('content_details', {})
+        if content_details:
+            due_at = format_datetime(content_details.get('due_at'))
+            if due_at != "Not set":
+                lines.append(f"- **Due**: {due_at}")
+            points = content_details.get('points_possible')
+            if points is not None:
+                lines.append(f"- **Points**: {points}")
+
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def format_ed_courses_markdown(courses: List[Dict]) -> str:
     """Format Ed course list as Markdown"""
     if not courses:
@@ -754,6 +875,101 @@ async def canvas_list_assignments(params: ListAssignmentsInput) -> str:
     course_name = course.get('name', '') if isinstance(course, dict) else ''
     
     return format_assignments_markdown(result, course_name)
+
+
+# ============================================================================
+# MCP Tools - Canvas Modules
+# ============================================================================
+
+@mcp.tool(
+    name="canvas_list_modules",
+    annotations={
+        "title": "Get Canvas Course Modules",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def canvas_list_modules(params: ListModulesInput) -> str:
+    """
+    Get the module list for a Canvas course (weekly/topic structure).
+
+    Modules organize course content into sections (e.g., "Week 1 - Introduction").
+    Use include_items=True to also get the items within each module.
+
+    Args:
+        params (ListModulesInput): Input parameters
+
+    Returns:
+        str: Module list (Markdown or JSON format)
+    """
+    api_params: Dict[str, Any] = {
+        "per_page": params.limit
+    }
+
+    if params.include_items:
+        api_params["include[]"] = "items"
+    if params.search_term:
+        api_params["search_term"] = params.search_term
+
+    result = await canvas_api_request(f"/courses/{params.course_id}/modules", params=api_params)
+
+    if isinstance(result, dict) and "error" in result:
+        return f"Error: {result['error']}"
+
+    if params.response_format == ResponseFormat.JSON:
+        return json.dumps(result, indent=2, ensure_ascii=False)
+
+    course = await canvas_api_request(f"/courses/{params.course_id}")
+    course_name = course.get('name', '') if isinstance(course, dict) and "error" not in course else ''
+
+    return format_modules_markdown(result, course_name)
+
+
+@mcp.tool(
+    name="canvas_list_module_items",
+    annotations={
+        "title": "Get Canvas Module Items",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def canvas_list_module_items(params: ListModuleItemsInput) -> str:
+    """
+    Get items within a specific Canvas module.
+
+    Returns items like Files, Pages, Assignments, Quizzes, and external links.
+
+    Args:
+        params (ListModuleItemsInput): Input parameters
+
+    Returns:
+        str: Module items list (Markdown or JSON format)
+    """
+    api_params: Dict[str, Any] = {}
+
+    if params.include_content_details:
+        api_params["include[]"] = "content_details"
+
+    result = await canvas_api_request(
+        f"/courses/{params.course_id}/modules/{params.module_id}/items",
+        params=api_params
+    )
+
+    if isinstance(result, dict) and "error" in result:
+        return f"Error: {result['error']}"
+
+    if params.response_format == ResponseFormat.JSON:
+        return json.dumps(result, indent=2, ensure_ascii=False)
+
+    # Get module name for display
+    module = await canvas_api_request(f"/courses/{params.course_id}/modules/{params.module_id}")
+    module_name = module.get('name', '') if isinstance(module, dict) and "error" not in module else ''
+
+    return format_module_items_markdown(result, module_name)
 
 
 # ============================================================================
