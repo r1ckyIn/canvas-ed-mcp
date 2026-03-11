@@ -15,7 +15,7 @@ from typing import Optional, List, Dict, Any
 
 import httpx
 from mcp.server.fastmcp import FastMCP
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 # ============================================================================
 # Configuration
@@ -350,6 +350,16 @@ class FetchUnitOutlineInput(BaseModel):
         default=ResponseFormat.MARKDOWN,
         description="Output format"
     )
+
+    @field_validator('unit_outline_url')
+    @classmethod
+    def validate_sydney_domain(cls, v: str) -> str:
+        """Restrict URLs to sydney.edu.au to prevent SSRF"""
+        from urllib.parse import urlparse
+        parsed = urlparse(v)
+        if not parsed.hostname or not parsed.hostname.endswith('sydney.edu.au'):
+            raise ValueError("URL must be a sydney.edu.au domain")
+        return v
 
 
 class ListCalendarInput(BaseModel):
@@ -1510,7 +1520,8 @@ async def canvas_get_grades(params: GetGradesInput) -> str:
         # Grades for a specific course
         enrollment_params: Dict[str, Any] = {
             "user_id": "self",
-            "type[]": "StudentEnrollment"
+            "type[]": "StudentEnrollment",
+            "include[]": ["grades"]
         }
         enrollments = await canvas_api_request(
             f"/courses/{params.course_id}/enrollments",
@@ -1521,6 +1532,7 @@ async def canvas_get_grades(params: GetGradesInput) -> str:
         enrollment_params = {
             "type[]": "StudentEnrollment",
             "state[]": "active",
+            "include[]": ["grades"],
             "per_page": MAX_PAGE_SIZE
         }
         enrollments = await canvas_api_request(
