@@ -410,7 +410,7 @@ class EdGetThreadInput(BaseModel):
 class EdSearchThreadsInput(BaseModel):
     """Input parameters for searching Ed Discussion threads"""
     model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
-    
+
     course_id: int = Field(
         ...,
         description="Ed course ID",
@@ -425,6 +425,44 @@ class EdSearchThreadsInput(BaseModel):
         default=20,
         description="Number of threads to return",
         ge=1, le=100
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format"
+    )
+
+
+# ============================================================================
+# Input Models - Ed Lessons
+# ============================================================================
+
+class EdListLessonsInput(BaseModel):
+    """Input parameters for getting Ed Lessons list"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    course_id: int = Field(
+        ...,
+        description="Ed course ID (numeric ID, can be obtained from ed_list_courses)",
+        gt=0
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format"
+    )
+
+
+class EdGetLessonInput(BaseModel):
+    """Input parameters for getting a single Ed Lesson with slides"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    lesson_id: int = Field(
+        ...,
+        description="Ed lesson ID (can be obtained from ed_list_lessons)",
+        gt=0
+    )
+    include_slide_content: bool = Field(
+        default=True,
+        description="Whether to include parsed slide content in the output"
     )
     response_format: ResponseFormat = Field(
         default=ResponseFormat.MARKDOWN,
@@ -1066,7 +1104,103 @@ def format_ed_thread_detail_markdown(thread: Dict) -> str:
     
     if not answers and not comments:
         lines.append("\n*No replies yet*")
-    
+
+    return "\n".join(lines)
+
+
+def format_ed_lessons_markdown(lessons: List[Dict], modules: List[Dict]) -> str:
+    """Format Ed Lessons list as Markdown, grouped by module"""
+    if not lessons:
+        return "No lessons found."
+
+    # Build module lookup
+    module_map: Dict[int, str] = {}
+    for m in modules:
+        module_map[m.get('id', 0)] = m.get('name', 'Unnamed Module')
+
+    # Group lessons by module_id
+    grouped: Dict[int, List[Dict]] = {}
+    ungrouped: List[Dict] = []
+    for lesson in lessons:
+        mid = lesson.get('module_id')
+        if mid and mid in module_map:
+            grouped.setdefault(mid, []).append(lesson)
+        else:
+            ungrouped.append(lesson)
+
+    lines = ["# Ed Lessons\n", f"*Total {len(lessons)} lessons*\n"]
+
+    for mid, mod_lessons in grouped.items():
+        mod_name = module_map[mid]
+        lines.append(f"## {mod_name}\n")
+        for lesson in mod_lessons:
+            title = lesson.get('title', 'Untitled')
+            lesson_id = lesson.get('id', '')
+            slide_count = lesson.get('slide_count', 0)
+            state = lesson.get('state', '')
+            due_at = format_datetime(lesson.get('due_at') or lesson.get('effective_due_at'))
+
+            lines.append(f"- **{title}** (ID: {lesson_id})")
+            lines.append(f"  - Slides: {slide_count} | State: {state}")
+            if due_at != "Not set":
+                lines.append(f"  - Due: {due_at}")
+        lines.append("")
+
+    if ungrouped:
+        lines.append("## Other Lessons\n")
+        for lesson in ungrouped:
+            title = lesson.get('title', 'Untitled')
+            lesson_id = lesson.get('id', '')
+            slide_count = lesson.get('slide_count', 0)
+            lines.append(f"- **{title}** (ID: {lesson_id}, Slides: {slide_count})")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def format_ed_lesson_detail_markdown(lesson: Dict, include_slides: bool = True) -> str:
+    """Format single Ed Lesson detail as Markdown"""
+    title = lesson.get('title', 'Untitled')
+    lesson_id = lesson.get('id', '')
+    slide_count = lesson.get('slide_count', 0)
+    state = lesson.get('state', '')
+    due_at = format_datetime(lesson.get('due_at') or lesson.get('effective_due_at'))
+    created_at = format_datetime(lesson.get('created_at'))
+
+    lines = [f"# {title}\n"]
+    lines.append(f"- **Lesson ID**: {lesson_id}")
+    lines.append(f"- **Slides**: {slide_count}")
+    lines.append(f"- **State**: {state}")
+    lines.append(f"- **Due**: {due_at}")
+    lines.append(f"- **Created**: {created_at}")
+
+    slides = lesson.get('slides', [])
+    if include_slides and slides:
+        lines.append(f"\n---\n")
+        lines.append(f"## Slides ({len(slides)})\n")
+        for slide in slides:
+            s_title = slide.get('title', '')
+            s_type = slide.get('type', 'document')
+            s_index = slide.get('index', 0)
+            s_content = slide.get('content', '')
+
+            header = f"### Slide {s_index + 1}"
+            if s_title:
+                header += f": {s_title}"
+            header += f" [{s_type}]"
+            lines.append(header)
+
+            if s_content:
+                parsed = parse_ed_document(s_content)
+                if parsed:
+                    lines.append(f"\n{parsed}\n")
+                else:
+                    lines.append("*Empty slide*\n")
+            else:
+                lines.append("*No content*\n")
+    elif not slides:
+        lines.append("\n*No slides available. Use ed_get_lesson to fetch full slide content.*")
+
     return "\n".join(lines)
 
 
@@ -1930,8 +2064,85 @@ async def ed_search_threads(params: EdSearchThreadsInput) -> str:
     
     lines = [f"# Search Results: '{params.query}'\n"]
     lines.append(format_ed_threads_markdown(threads if isinstance(threads, list) else []))
-    
+
     return "\n".join(lines)
+
+
+# ============================================================================
+# MCP Tools - Ed Lessons
+# ============================================================================
+
+@mcp.tool(
+    name="ed_list_lessons",
+    annotations={
+        "title": "Get Ed Lessons List",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def ed_list_lessons(params: EdListLessonsInput) -> str:
+    """
+    Get the lesson list for an Ed course, grouped by module.
+
+    Returns lesson titles, slide counts, due dates, and states.
+    Use ed_get_lesson to get full slide content for a specific lesson.
+
+    Args:
+        params (EdListLessonsInput): Input parameters
+
+    Returns:
+        str: Lesson list (Markdown or JSON format)
+    """
+    result = await ed_api_request(f"/courses/{params.course_id}/lessons")
+
+    if isinstance(result, dict) and "error" in result:
+        return f"Error: {result['error']}"
+
+    lessons = result.get('lessons', [])
+    modules = result.get('modules', [])
+
+    if params.response_format == ResponseFormat.JSON:
+        return json.dumps(result, indent=2, ensure_ascii=False)
+
+    return format_ed_lessons_markdown(lessons, modules)
+
+
+@mcp.tool(
+    name="ed_get_lesson",
+    annotations={
+        "title": "Get Ed Lesson Details",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def ed_get_lesson(params: EdGetLessonInput) -> str:
+    """
+    Get detailed content of a single Ed Lesson, including all slides.
+
+    Slides contain full content (XML format, automatically parsed to text).
+    Slide types: 'document' (text/content) and 'code' (code challenges).
+
+    Args:
+        params (EdGetLessonInput): Input parameters
+
+    Returns:
+        str: Lesson details with slides (Markdown or JSON format)
+    """
+    result = await ed_api_request(f"/lessons/{params.lesson_id}")
+
+    if isinstance(result, dict) and "error" in result:
+        return f"Error: {result['error']}"
+
+    lesson = result.get('lesson', result)
+
+    if params.response_format == ResponseFormat.JSON:
+        return json.dumps(lesson, indent=2, ensure_ascii=False)
+
+    return format_ed_lesson_detail_markdown(lesson, params.include_slide_content)
 
 
 # ============================================================================
