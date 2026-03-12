@@ -745,7 +745,7 @@ def format_courses_markdown(courses: List[Dict]) -> str:
     if not courses:
         return "No Canvas courses found."
     
-    lines = [f"# My Canvas Courses\n", f"*Total {len(courses)} courses*\n"]
+    lines = ["# My Canvas Courses\n", f"*Total {len(courses)} courses*\n"]
     
     for i, course in enumerate(courses, 1):
         name = course.get('name', 'Unnamed Course')
@@ -1029,7 +1029,7 @@ def parse_unit_outline_html(html: str) -> Dict[str, Any]:
 
     # Extract assessment structure from #assessment-table
     table = soup.find('table', id='assessment-table')
-    if table:
+    if table and hasattr(table, 'find_all'):
         rows = table.find_all('tr')
         for row in rows:
             cells = row.find_all('td')
@@ -1054,14 +1054,14 @@ def parse_unit_outline_html(html: str) -> Dict[str, Any]:
     desc_el = soup.find('div', class_='course-description')
     if not desc_el:
         desc_el = soup.find('meta', attrs={'name': 'description'})
-        if desc_el:
-            result["course_description"] = desc_el.get('content', '')
+        if desc_el and hasattr(desc_el, 'get'):
+            result["course_description"] = desc_el.get('content', '')  # type: ignore[arg-type]
     else:
         result["course_description"] = desc_el.get_text(strip=True)
 
     # Extract learning outcomes
     outcomes_section = soup.find('div', id='learning-outcomes') or soup.find('div', class_='learning-outcomes')
-    if outcomes_section:
+    if outcomes_section and hasattr(outcomes_section, 'find_all'):
         items = outcomes_section.find_all('li')
         result["learning_outcomes"] = [li.get_text(strip=True) for li in items]
 
@@ -1073,7 +1073,7 @@ def format_unit_outline_markdown(outline_data: Dict[str, Any]) -> str:
     lines = ["# Unit Outline\n"]
 
     if outline_data.get("course_description"):
-        lines.append(f"## Course Description\n")
+        lines.append("## Course Description\n")
         lines.append(outline_data["course_description"])
         lines.append("")
 
@@ -1230,7 +1230,7 @@ def format_ed_thread_detail_markdown(thread: Dict) -> str:
     lines.append(f"**Author**: {author}")
     lines.append(f"**Posted at**: {created_at}")
     lines.append(f"**Thread ID**: {thread_id}")
-    lines.append(f"\n---\n")
+    lines.append("\n---\n")
     lines.append(content if content else "*No content*")
     
     # Replies/Answers
@@ -1337,7 +1337,7 @@ def format_ed_lesson_detail_markdown(lesson: Dict, include_slides: bool = True) 
 
     slides = lesson.get('slides', [])
     if include_slides and slides:
-        lines.append(f"\n---\n")
+        lines.append("\n---\n")
         lines.append(f"## Slides ({len(slides)})\n")
         for slide in slides:
             s_title = slide.get('title', '')
@@ -1371,7 +1371,7 @@ def format_ed_lesson_detail_markdown(lesson: Dict, include_slides: bool = True) 
 
 @mcp.tool(
     name="canvas_list_courses",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Canvas Course List",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -1410,7 +1410,7 @@ async def canvas_list_courses(params: ListCoursesInput) -> str:
 
 @mcp.tool(
     name="canvas_get_course",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Canvas Course Details",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -1455,7 +1455,7 @@ async def canvas_get_course(params: GetCourseInput) -> str:
 
 @mcp.tool(
     name="canvas_list_announcements",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Canvas Course Announcements",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -1492,7 +1492,7 @@ async def canvas_list_announcements(params: ListAnnouncementsInput) -> str:
 
 @mcp.tool(
     name="canvas_list_assignments",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Canvas Course Assignments",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -1536,7 +1536,7 @@ async def canvas_list_assignments(params: ListAssignmentsInput) -> str:
 
 @mcp.tool(
     name="canvas_get_grades",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Canvas Grades",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -1609,7 +1609,7 @@ async def canvas_get_grades(params: GetGradesInput) -> str:
 
 @mcp.tool(
     name="canvas_list_files",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Canvas Course Files",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -1652,7 +1652,7 @@ async def canvas_list_files(params: ListFilesInput) -> str:
 
 @mcp.tool(
     name="canvas_get_file_content",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Canvas File Details",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -1704,7 +1704,7 @@ async def canvas_get_file_content(params: GetFileContentInput) -> str:
 
 @mcp.tool(
     name="canvas_list_pages",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Canvas Course Pages",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -1745,7 +1745,7 @@ async def canvas_list_pages(params: ListPagesInput) -> str:
 
 @mcp.tool(
     name="canvas_get_page",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Canvas Page Content",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -1780,7 +1780,7 @@ async def canvas_get_page(params: GetPageInput) -> str:
 
 @mcp.tool(
     name="canvas_list_modules",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Canvas Course Modules",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -1829,7 +1829,7 @@ async def canvas_list_modules(params: ListModulesInput) -> str:
 
 @mcp.tool(
     name="canvas_list_module_items",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Canvas Module Items",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -1878,7 +1878,7 @@ async def canvas_list_module_items(params: ListModuleItemsInput) -> str:
 
 @mcp.tool(
     name="canvas_get_unit_outline_url",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Canvas Unit Outline URL",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -1947,14 +1947,14 @@ async def canvas_get_unit_outline_url(params: GetUnitOutlineUrlInput) -> str:
     lines = ["# Unit Outline URL\n"]
     lines.append(f"- **Tab**: {outline_tab.get('label', '')}")
     lines.append(f"- **URL**: {unit_outline_url}")
-    lines.append(f"\nUse `fetch_unit_outline` with this URL to get the assessment structure.")
+    lines.append("\nUse `fetch_unit_outline` with this URL to get the assessment structure.")
 
     return "\n".join(lines)
 
 
 @mcp.tool(
     name="fetch_unit_outline",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Fetch and Parse Unit Outline",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -2017,7 +2017,7 @@ async def fetch_unit_outline(params: FetchUnitOutlineInput) -> str:
 
 @mcp.tool(
     name="canvas_list_calendar",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Canvas Calendar Events",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -2063,7 +2063,7 @@ async def canvas_list_calendar(params: ListCalendarInput) -> str:
 
 @mcp.tool(
     name="canvas_get_syllabus",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Canvas Course Syllabus",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -2116,7 +2116,7 @@ async def canvas_get_syllabus(params: GetSyllabusInput) -> str:
 
 @mcp.tool(
     name="ed_get_user_info",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Ed User Information",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -2156,7 +2156,7 @@ async def ed_get_user_info(params: EdUserInfoInput) -> str:
 
 @mcp.tool(
     name="ed_list_courses",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Ed Discussion Course List",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -2192,7 +2192,7 @@ async def ed_list_courses(params: EdListCoursesInput) -> str:
 
 @mcp.tool(
     name="ed_list_threads",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Ed Discussion Thread List",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -2248,7 +2248,7 @@ async def ed_list_threads(params: EdListThreadsInput) -> str:
 
 @mcp.tool(
     name="ed_get_thread",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Ed Discussion Thread Details",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -2282,7 +2282,7 @@ async def ed_get_thread(params: EdGetThreadInput) -> str:
 
 @mcp.tool(
     name="ed_search_threads",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Search Ed Discussion Threads",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -2333,7 +2333,7 @@ async def ed_search_threads(params: EdSearchThreadsInput) -> str:
 
 @mcp.tool(
     name="ed_list_lessons",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Ed Lessons List",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -2370,7 +2370,7 @@ async def ed_list_lessons(params: EdListLessonsInput) -> str:
 
 @mcp.tool(
     name="ed_get_lesson",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Ed Lesson Details",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -2413,7 +2413,7 @@ MAX_DOWNLOAD_SIZE = 50 * 1024 * 1024  # 50MB
 
 @mcp.tool(
     name="canvas_download_file",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Download Canvas File to Local",
         "readOnlyHint": False,
         "destructiveHint": False,
