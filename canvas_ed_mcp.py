@@ -624,13 +624,15 @@ async def canvas_api_request(
     url = f"{CANVAS_BASE_URL}{endpoint}"
     headers = get_canvas_headers()
     client = get_canvas_client()
-    req_timeout = httpx.Timeout(timeout_override) if timeout_override else None
 
     try:
+        kwargs: Dict[str, Any] = {"headers": headers}
+        if timeout_override:
+            kwargs["timeout"] = httpx.Timeout(timeout_override)
         if method == "GET":
-            response = await client.get(url, headers=headers, params=params, timeout=req_timeout)
+            response = await client.get(url, params=params, **kwargs)
         elif method == "POST":
-            response = await client.post(url, headers=headers, json=data, timeout=req_timeout)
+            response = await client.post(url, json=data, **kwargs)
         else:
             raise ValueError(f"Unsupported HTTP method: {method}")
 
@@ -667,19 +669,20 @@ async def canvas_api_request_paginated(
     url: Optional[str] = f"{CANVAS_BASE_URL}{endpoint}"
     headers = get_canvas_headers()
     client = get_canvas_client()
-    req_timeout = httpx.Timeout(timeout_override) if timeout_override else None
 
     if params is None:
         params = {}
     params.setdefault("per_page", 50)
 
+    kwargs: Dict[str, Any] = {"headers": headers}
+    if timeout_override:
+        kwargs["timeout"] = httpx.Timeout(timeout_override)
+
     page = 0
     while url and page < max_pages:
         try:
             response = await client.get(
-                url, headers=headers,
-                params=params if page == 0 else None,
-                timeout=req_timeout,
+                url, params=params if page == 0 else None, **kwargs,
             )
             response.raise_for_status()
             data = response.json()
