@@ -1241,7 +1241,10 @@ def format_ed_courses_markdown(courses: List[Dict]) -> str:
 
     lines = ["# My Ed Discussion Courses\n", f"*Total {len(courses)} courses*\n"]
     
-    for i, course in enumerate(courses, 1):
+    for i, enrollment in enumerate(courses, 1):
+        # Unwrap nested course object from enrollment
+        course = enrollment.get('course', enrollment)
+
         name = course.get('name', 'Unnamed Course')
         code = course.get('code', '')
         course_id = course.get('id', '')
