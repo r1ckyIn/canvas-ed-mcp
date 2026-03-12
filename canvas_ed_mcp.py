@@ -567,6 +567,39 @@ class EdGetLessonInput(BaseModel):
 
 
 # ============================================================================
+# HTTP Client Pool (lazy initialization for TCP connection reuse)
+# ============================================================================
+
+_canvas_client: Optional[httpx.AsyncClient] = None
+_ed_client: Optional[httpx.AsyncClient] = None
+_general_client: Optional[httpx.AsyncClient] = None
+
+
+def get_canvas_client() -> httpx.AsyncClient:
+    """Get or create reusable Canvas API HTTP client."""
+    global _canvas_client
+    if _canvas_client is None:
+        _canvas_client = httpx.AsyncClient(timeout=TIMEOUT_SECONDS)
+    return _canvas_client
+
+
+def get_ed_client() -> httpx.AsyncClient:
+    """Get or create reusable Ed API HTTP client."""
+    global _ed_client
+    if _ed_client is None:
+        _ed_client = httpx.AsyncClient(timeout=TIMEOUT_SECONDS)
+    return _ed_client
+
+
+def get_general_client() -> httpx.AsyncClient:
+    """Get or create reusable general HTTP client (for unit outlines, downloads)."""
+    global _general_client
+    if _general_client is None:
+        _general_client = httpx.AsyncClient(timeout=120, follow_redirects=True)
+    return _general_client
+
+
+# ============================================================================
 # API Client Utilities - Canvas
 # ============================================================================
 
@@ -590,26 +623,82 @@ async def canvas_api_request(
     """Send Canvas API request"""
     url = f"{CANVAS_BASE_URL}{endpoint}"
     headers = get_canvas_headers()
+    client = get_canvas_client()
+    req_timeout = httpx.Timeout(timeout_override) if timeout_override else None
 
-    timeout = timeout_override or TIMEOUT_SECONDS
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    try:
+        if method == "GET":
+            response = await client.get(url, headers=headers, params=params, timeout=req_timeout)
+        elif method == "POST":
+            response = await client.post(url, headers=headers, json=data, timeout=req_timeout)
+        else:
+            raise ValueError(f"Unsupported HTTP method: {method}")
+
+        response.raise_for_status()
+        return response.json()
+
+    except httpx.HTTPStatusError as e:
+        return _handle_canvas_error(e)
+    except httpx.TimeoutException:
+        return {"error": "Canvas request timed out. Please try again later."}
+    except Exception:
+        return {"error": "Canvas request failed. Please try again later."}
+
+
+def _parse_next_link(link_header: str) -> Optional[str]:
+    """Parse Canvas Link header to find next page URL."""
+    if not link_header:
+        return None
+    for part in link_header.split(","):
+        if 'rel="next"' in part:
+            url = part.split(";")[0].strip().strip("<>")
+            return url
+    return None
+
+
+async def canvas_api_request_paginated(
+    endpoint: str,
+    params: Optional[Dict[str, Any]] = None,
+    max_pages: int = 10,
+    timeout_override: Optional[int] = None,
+) -> List[Any]:
+    """Auto-paginate Canvas API requests using Link header."""
+    all_results: List[Any] = []
+    url: Optional[str] = f"{CANVAS_BASE_URL}{endpoint}"
+    headers = get_canvas_headers()
+    client = get_canvas_client()
+    req_timeout = httpx.Timeout(timeout_override) if timeout_override else None
+
+    if params is None:
+        params = {}
+    params.setdefault("per_page", 50)
+
+    page = 0
+    while url and page < max_pages:
         try:
-            if method == "GET":
-                response = await client.get(url, headers=headers, params=params)
-            elif method == "POST":
-                response = await client.post(url, headers=headers, json=data)
-            else:
-                raise ValueError(f"Unsupported HTTP method: {method}")
-            
+            response = await client.get(
+                url, headers=headers,
+                params=params if page == 0 else None,
+                timeout=req_timeout,
+            )
             response.raise_for_status()
-            return response.json()
-            
+            data = response.json()
+            if isinstance(data, list):
+                all_results.extend(data)
+            else:
+                all_results.append(data)
+
+            url = _parse_next_link(response.headers.get("link", ""))
+            page += 1
+
         except httpx.HTTPStatusError as e:
-            return _handle_canvas_error(e)
+            return [_handle_canvas_error(e)]
         except httpx.TimeoutException:
-            return {"error": "Canvas request timed out. Please try again later."}
+            return [{"error": "Canvas request timed out. Please try again later."}]
         except Exception:
-            return {"error": "Canvas request failed. Please try again later."}
+            return [{"error": "Canvas request failed. Please try again later."}]
+
+    return all_results
 
 
 def _handle_canvas_error(e: httpx.HTTPStatusError) -> Dict[str, str]:
@@ -651,25 +740,25 @@ async def ed_api_request(
     """Send Ed Discussion API request"""
     url = f"{ED_BASE_URL}{endpoint}"
     headers = get_ed_headers()
-    
-    async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
-        try:
-            if method == "GET":
-                response = await client.get(url, headers=headers, params=params)
-            elif method == "POST":
-                response = await client.post(url, headers=headers, json=data)
-            else:
-                raise ValueError(f"Unsupported HTTP method: {method}")
-            
-            response.raise_for_status()
-            return response.json()
-            
-        except httpx.HTTPStatusError as e:
-            return _handle_ed_error(e)
-        except httpx.TimeoutException:
-            return {"error": "Ed request timed out. Please try again later."}
-        except Exception:
-            return {"error": "Ed request failed. Please try again later."}
+    client = get_ed_client()
+
+    try:
+        if method == "GET":
+            response = await client.get(url, headers=headers, params=params)
+        elif method == "POST":
+            response = await client.post(url, headers=headers, json=data)
+        else:
+            raise ValueError(f"Unsupported HTTP method: {method}")
+
+        response.raise_for_status()
+        return response.json()
+
+    except httpx.HTTPStatusError as e:
+        return _handle_ed_error(e)
+    except httpx.TimeoutException:
+        return {"error": "Ed request timed out. Please try again later."}
+    except Exception:
+        return {"error": "Ed request failed. Please try again later."}
 
 
 def _handle_ed_error(e: httpx.HTTPStatusError) -> Dict[str, str]:
@@ -745,7 +834,7 @@ def format_courses_markdown(courses: List[Dict]) -> str:
     if not courses:
         return "No Canvas courses found."
     
-    lines = [f"# My Canvas Courses\n", f"*Total {len(courses)} courses*\n"]
+    lines = ["# My Canvas Courses\n", f"*Total {len(courses)} courses*\n"]
     
     for i, course in enumerate(courses, 1):
         name = course.get('name', 'Unnamed Course')
@@ -1029,7 +1118,7 @@ def parse_unit_outline_html(html: str) -> Dict[str, Any]:
 
     # Extract assessment structure from #assessment-table
     table = soup.find('table', id='assessment-table')
-    if table:
+    if table and hasattr(table, 'find_all'):
         rows = table.find_all('tr')
         for row in rows:
             cells = row.find_all('td')
@@ -1054,14 +1143,14 @@ def parse_unit_outline_html(html: str) -> Dict[str, Any]:
     desc_el = soup.find('div', class_='course-description')
     if not desc_el:
         desc_el = soup.find('meta', attrs={'name': 'description'})
-        if desc_el:
-            result["course_description"] = desc_el.get('content', '')
+        if desc_el and hasattr(desc_el, 'get'):
+            result["course_description"] = desc_el.get('content', '')  # type: ignore[arg-type]
     else:
         result["course_description"] = desc_el.get_text(strip=True)
 
     # Extract learning outcomes
     outcomes_section = soup.find('div', id='learning-outcomes') or soup.find('div', class_='learning-outcomes')
-    if outcomes_section:
+    if outcomes_section and hasattr(outcomes_section, 'find_all'):
         items = outcomes_section.find_all('li')
         result["learning_outcomes"] = [li.get_text(strip=True) for li in items]
 
@@ -1073,7 +1162,7 @@ def format_unit_outline_markdown(outline_data: Dict[str, Any]) -> str:
     lines = ["# Unit Outline\n"]
 
     if outline_data.get("course_description"):
-        lines.append(f"## Course Description\n")
+        lines.append("## Course Description\n")
         lines.append(outline_data["course_description"])
         lines.append("")
 
@@ -1230,7 +1319,7 @@ def format_ed_thread_detail_markdown(thread: Dict) -> str:
     lines.append(f"**Author**: {author}")
     lines.append(f"**Posted at**: {created_at}")
     lines.append(f"**Thread ID**: {thread_id}")
-    lines.append(f"\n---\n")
+    lines.append("\n---\n")
     lines.append(content if content else "*No content*")
     
     # Replies/Answers
@@ -1337,7 +1426,7 @@ def format_ed_lesson_detail_markdown(lesson: Dict, include_slides: bool = True) 
 
     slides = lesson.get('slides', [])
     if include_slides and slides:
-        lines.append(f"\n---\n")
+        lines.append("\n---\n")
         lines.append(f"## Slides ({len(slides)})\n")
         for slide in slides:
             s_title = slide.get('title', '')
@@ -1371,7 +1460,7 @@ def format_ed_lesson_detail_markdown(lesson: Dict, include_slides: bool = True) 
 
 @mcp.tool(
     name="canvas_list_courses",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Canvas Course List",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -1397,20 +1486,20 @@ async def canvas_list_courses(params: ListCoursesInput) -> str:
         "include[]": ["term"]
     }
     
-    result = await canvas_api_request("/courses", params=api_params)
-    
-    if isinstance(result, dict) and "error" in result:
-        return f"Error: {result['error']}"
-    
+    result = await canvas_api_request_paginated("/courses", params=api_params)
+
+    if result and isinstance(result[0], dict) and "error" in result[0]:
+        return f"Error: {result[0]['error']}"
+
     if params.response_format == ResponseFormat.JSON:
         return json.dumps(result, indent=2, ensure_ascii=False)
-    
+
     return format_courses_markdown(result)
 
 
 @mcp.tool(
     name="canvas_get_course",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Canvas Course Details",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -1455,7 +1544,7 @@ async def canvas_get_course(params: GetCourseInput) -> str:
 
 @mcp.tool(
     name="canvas_list_announcements",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Canvas Course Announcements",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -1478,10 +1567,10 @@ async def canvas_list_announcements(params: ListAnnouncementsInput) -> str:
         "per_page": params.limit
     }
     
-    result = await canvas_api_request("/announcements", params=api_params)
+    result = await canvas_api_request_paginated("/announcements", params=api_params)
 
-    if isinstance(result, dict) and "error" in result:
-        return f"Error: {result['error']}"
+    if result and isinstance(result[0], dict) and "error" in result[0]:
+        return f"Error: {result[0]['error']}"
 
     if params.response_format == ResponseFormat.JSON:
         return json.dumps(result, indent=2, ensure_ascii=False)
@@ -1492,7 +1581,7 @@ async def canvas_list_announcements(params: ListAnnouncementsInput) -> str:
 
 @mcp.tool(
     name="canvas_list_assignments",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Canvas Course Assignments",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -1518,10 +1607,12 @@ async def canvas_list_assignments(params: ListAssignmentsInput) -> str:
     if params.include_submissions:
         api_params["include[]"] = ["submission"]
     
-    result = await canvas_api_request(f"/courses/{params.course_id}/assignments", params=api_params)
+    result = await canvas_api_request_paginated(
+        f"/courses/{params.course_id}/assignments", params=api_params
+    )
 
-    if isinstance(result, dict) and "error" in result:
-        return f"Error: {result['error']}"
+    if result and isinstance(result[0], dict) and "error" in result[0]:
+        return f"Error: {result[0]['error']}"
 
     if params.response_format == ResponseFormat.JSON:
         return json.dumps(result, indent=2, ensure_ascii=False)
@@ -1536,7 +1627,7 @@ async def canvas_list_assignments(params: ListAssignmentsInput) -> str:
 
 @mcp.tool(
     name="canvas_get_grades",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Canvas Grades",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -1609,7 +1700,7 @@ async def canvas_get_grades(params: GetGradesInput) -> str:
 
 @mcp.tool(
     name="canvas_list_files",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Canvas Course Files",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -1638,10 +1729,12 @@ async def canvas_list_files(params: ListFilesInput) -> str:
     if params.search_term:
         api_params["search_term"] = params.search_term
 
-    result = await canvas_api_request(f"/courses/{params.course_id}/files", params=api_params)
+    result = await canvas_api_request_paginated(
+        f"/courses/{params.course_id}/files", params=api_params
+    )
 
-    if isinstance(result, dict) and "error" in result:
-        return f"Error: {result['error']}"
+    if result and isinstance(result[0], dict) and "error" in result[0]:
+        return f"Error: {result[0]['error']}"
 
     if params.response_format == ResponseFormat.JSON:
         return json.dumps(result, indent=2, ensure_ascii=False)
@@ -1652,7 +1745,7 @@ async def canvas_list_files(params: ListFilesInput) -> str:
 
 @mcp.tool(
     name="canvas_get_file_content",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Canvas File Details",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -1704,7 +1797,7 @@ async def canvas_get_file_content(params: GetFileContentInput) -> str:
 
 @mcp.tool(
     name="canvas_list_pages",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Canvas Course Pages",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -1731,10 +1824,12 @@ async def canvas_list_pages(params: ListPagesInput) -> str:
     if params.search_term:
         api_params["search_term"] = params.search_term
 
-    result = await canvas_api_request(f"/courses/{params.course_id}/pages", params=api_params)
+    result = await canvas_api_request_paginated(
+        f"/courses/{params.course_id}/pages", params=api_params
+    )
 
-    if isinstance(result, dict) and "error" in result:
-        return f"Error: {result['error']}"
+    if result and isinstance(result[0], dict) and "error" in result[0]:
+        return f"Error: {result[0]['error']}"
 
     if params.response_format == ResponseFormat.JSON:
         return json.dumps(result, indent=2, ensure_ascii=False)
@@ -1745,7 +1840,7 @@ async def canvas_list_pages(params: ListPagesInput) -> str:
 
 @mcp.tool(
     name="canvas_get_page",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Canvas Page Content",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -1780,7 +1875,7 @@ async def canvas_get_page(params: GetPageInput) -> str:
 
 @mcp.tool(
     name="canvas_list_modules",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Canvas Course Modules",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -1810,15 +1905,15 @@ async def canvas_list_modules(params: ListModulesInput) -> str:
     if params.search_term:
         api_params["search_term"] = params.search_term
 
-    timeout = 60 if params.include_items else TIMEOUT_SECONDS
-    result = await canvas_api_request(
+    timeout = 60 if params.include_items else None
+    result = await canvas_api_request_paginated(
         f"/courses/{params.course_id}/modules",
         params=api_params,
-        timeout_override=timeout
+        timeout_override=timeout,
     )
 
-    if isinstance(result, dict) and "error" in result:
-        return f"Error: {result['error']}"
+    if result and isinstance(result[0], dict) and "error" in result[0]:
+        return f"Error: {result[0]['error']}"
 
     if params.response_format == ResponseFormat.JSON:
         return json.dumps(result, indent=2, ensure_ascii=False)
@@ -1829,7 +1924,7 @@ async def canvas_list_modules(params: ListModulesInput) -> str:
 
 @mcp.tool(
     name="canvas_list_module_items",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Canvas Module Items",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -1854,13 +1949,13 @@ async def canvas_list_module_items(params: ListModuleItemsInput) -> str:
     if params.include_content_details:
         api_params["include[]"] = "content_details"
 
-    result = await canvas_api_request(
+    result = await canvas_api_request_paginated(
         f"/courses/{params.course_id}/modules/{params.module_id}/items",
-        params=api_params
+        params=api_params,
     )
 
-    if isinstance(result, dict) and "error" in result:
-        return f"Error: {result['error']}"
+    if result and isinstance(result[0], dict) and "error" in result[0]:
+        return f"Error: {result[0]['error']}"
 
     if params.response_format == ResponseFormat.JSON:
         return json.dumps(result, indent=2, ensure_ascii=False)
@@ -1878,7 +1973,7 @@ async def canvas_list_module_items(params: ListModuleItemsInput) -> str:
 
 @mcp.tool(
     name="canvas_get_unit_outline_url",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Canvas Unit Outline URL",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -1947,14 +2042,14 @@ async def canvas_get_unit_outline_url(params: GetUnitOutlineUrlInput) -> str:
     lines = ["# Unit Outline URL\n"]
     lines.append(f"- **Tab**: {outline_tab.get('label', '')}")
     lines.append(f"- **URL**: {unit_outline_url}")
-    lines.append(f"\nUse `fetch_unit_outline` with this URL to get the assessment structure.")
+    lines.append("\nUse `fetch_unit_outline` with this URL to get the assessment structure.")
 
     return "\n".join(lines)
 
 
 @mcp.tool(
     name="fetch_unit_outline",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Fetch and Parse Unit Outline",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -1977,17 +2072,17 @@ async def fetch_unit_outline(params: FetchUnitOutlineInput) -> str:
         str: Parsed Unit Outline data (Markdown or JSON format)
     """
     # Fetch HTML without authentication
-    async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS, follow_redirects=True) as client:
-        try:
-            response = await client.get(params.unit_outline_url)
-            response.raise_for_status()
-            html = response.text
-        except httpx.HTTPStatusError as e:
-            return f"Error: Failed to fetch Unit Outline (HTTP {e.response.status_code})"
-        except httpx.TimeoutException:
-            return "Error: Unit Outline request timed out."
-        except Exception:
-            return "Error: Failed to fetch Unit Outline page."
+    client = get_general_client()
+    try:
+        response = await client.get(params.unit_outline_url)
+        response.raise_for_status()
+        html = response.text
+    except httpx.HTTPStatusError as e:
+        return f"Error: Failed to fetch Unit Outline (HTTP {e.response.status_code})"
+    except httpx.TimeoutException:
+        return "Error: Unit Outline request timed out."
+    except Exception:
+        return "Error: Failed to fetch Unit Outline page."
 
     # Parse HTML
     outline_data = parse_unit_outline_html(html)
@@ -2017,7 +2112,7 @@ async def fetch_unit_outline(params: FetchUnitOutlineInput) -> str:
 
 @mcp.tool(
     name="canvas_list_calendar",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Canvas Calendar Events",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -2050,10 +2145,10 @@ async def canvas_list_calendar(params: ListCalendarInput) -> str:
     if params.end_date:
         api_params["end_date"] = params.end_date
 
-    result = await canvas_api_request("/calendar_events", params=api_params)
+    result = await canvas_api_request_paginated("/calendar_events", params=api_params)
 
-    if isinstance(result, dict) and "error" in result:
-        return f"Error: {result['error']}"
+    if result and isinstance(result[0], dict) and "error" in result[0]:
+        return f"Error: {result[0]['error']}"
 
     if params.response_format == ResponseFormat.JSON:
         return json.dumps(result, indent=2, ensure_ascii=False)
@@ -2063,7 +2158,7 @@ async def canvas_list_calendar(params: ListCalendarInput) -> str:
 
 @mcp.tool(
     name="canvas_get_syllabus",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Canvas Course Syllabus",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -2116,7 +2211,7 @@ async def canvas_get_syllabus(params: GetSyllabusInput) -> str:
 
 @mcp.tool(
     name="ed_get_user_info",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Ed User Information",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -2156,7 +2251,7 @@ async def ed_get_user_info(params: EdUserInfoInput) -> str:
 
 @mcp.tool(
     name="ed_list_courses",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Ed Discussion Course List",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -2192,7 +2287,7 @@ async def ed_list_courses(params: EdListCoursesInput) -> str:
 
 @mcp.tool(
     name="ed_list_threads",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Ed Discussion Thread List",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -2248,7 +2343,7 @@ async def ed_list_threads(params: EdListThreadsInput) -> str:
 
 @mcp.tool(
     name="ed_get_thread",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Ed Discussion Thread Details",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -2282,7 +2377,7 @@ async def ed_get_thread(params: EdGetThreadInput) -> str:
 
 @mcp.tool(
     name="ed_search_threads",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Search Ed Discussion Threads",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -2333,7 +2428,7 @@ async def ed_search_threads(params: EdSearchThreadsInput) -> str:
 
 @mcp.tool(
     name="ed_list_lessons",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Ed Lessons List",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -2370,7 +2465,7 @@ async def ed_list_lessons(params: EdListLessonsInput) -> str:
 
 @mcp.tool(
     name="ed_get_lesson",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Get Ed Lesson Details",
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -2413,7 +2508,7 @@ MAX_DOWNLOAD_SIZE = 50 * 1024 * 1024  # 50MB
 
 @mcp.tool(
     name="canvas_download_file",
-    annotations={
+    annotations={  # type: ignore[arg-type]
         "title": "Download Canvas File to Local",
         "readOnlyHint": False,
         "destructiveHint": False,
@@ -2465,22 +2560,22 @@ async def canvas_download_file(params: DownloadFileInput) -> str:
     if parent_dir:
         os.makedirs(parent_dir, exist_ok=True)
 
-    # Download file
-    async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
-        try:
-            headers = get_canvas_headers()
-            response = await client.get(download_url, headers=headers)
+    # Download file with streaming to avoid loading entire file into memory
+    client = get_general_client()
+    try:
+        headers = get_canvas_headers()
+        async with client.stream("GET", download_url, headers=headers) as response:
             response.raise_for_status()
-
             with open(save_path, 'wb') as f:
-                f.write(response.content)
+                async for chunk in response.aiter_bytes(chunk_size=8192):
+                    f.write(chunk)
 
-        except httpx.HTTPStatusError as e:
-            return f"Error: Download failed (HTTP {e.response.status_code})"
-        except httpx.TimeoutException:
-            return "Error: Download timed out. The file may be too large."
-        except Exception:
-            return "Error: Failed to download file."
+    except httpx.HTTPStatusError as e:
+        return f"Error: Download failed (HTTP {e.response.status_code})"
+    except httpx.TimeoutException:
+        return "Error: Download timed out. The file may be too large."
+    except Exception:
+        return "Error: Failed to download file."
 
     size_str = format_file_size(file_size)
 
