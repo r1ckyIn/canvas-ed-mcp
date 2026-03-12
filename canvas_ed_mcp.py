@@ -278,6 +278,21 @@ class GetFileContentInput(BaseModel):
     )
 
 
+class DownloadFileInput(BaseModel):
+    """Input parameters for downloading a Canvas file"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    file_id: str = Field(
+        ...,
+        description="Canvas file ID to download",
+        min_length=1
+    )
+    save_path: Optional[str] = Field(
+        default=None,
+        description="Full file path to save. Defaults to current directory + Canvas display_name"
+    )
+
+
 class ListPagesInput(BaseModel):
     """Input parameters for getting Canvas course wiki pages"""
     model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
@@ -569,13 +584,15 @@ async def canvas_api_request(
     endpoint: str,
     method: str = "GET",
     params: Optional[Dict[str, Any]] = None,
-    data: Optional[Dict[str, Any]] = None
+    data: Optional[Dict[str, Any]] = None,
+    timeout_override: Optional[int] = None
 ) -> Any:
     """Send Canvas API request"""
     url = f"{CANVAS_BASE_URL}{endpoint}"
     headers = get_canvas_headers()
-    
-    async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
+
+    timeout = timeout_override or TIMEOUT_SECONDS
+    async with httpx.AsyncClient(timeout=timeout) as client:
         try:
             if method == "GET":
                 response = await client.get(url, headers=headers, params=params)
@@ -600,7 +617,9 @@ def _handle_canvas_error(e: httpx.HTTPStatusError) -> Dict[str, str]:
     status_code = e.response.status_code
     error_messages = {
         401: "Canvas authentication failed. Please check if API token is valid.",
-        403: "Canvas permission denied.",
+        403: ("Canvas permission denied. This course may restrict file listing for students. "
+              "Alternative: use canvas_get_page (JSON format) to find embedded file links "
+              "in course pages, then use canvas_get_file_content with the file ID."),
         404: "Canvas resource not found. Please check if the ID is correct.",
         429: "Canvas request rate limit exceeded. Please try again later."
     }
@@ -962,8 +981,20 @@ def format_page_detail_markdown(page: Dict) -> str:
     """Format single Canvas wiki page as Markdown"""
     page_title = page.get('title', 'Untitled')
     updated_at = format_datetime(page.get('updated_at'))
-    body = strip_html(page.get('body', ''))
 
+    # Check for locked content
+    if page.get('locked_for_user'):
+        lock_info = page.get('lock_info', {})
+        lock_explanation = page.get('lock_explanation', 'This page is locked.')
+        prereqs = lock_info.get('context_module', {}).get('name', '')
+        lines = [f"# {page_title} (Locked)\n"]
+        lines.append("**Status**: Locked")
+        lines.append(f"**Reason**: {lock_explanation}")
+        if prereqs:
+            lines.append(f"**Prerequisite Module**: {prereqs}")
+        return "\n".join(lines)
+
+    body = strip_html(page.get('body', ''))
     lines = [f"# {page_title}\n"]
     lines.append(f"**Updated**: {updated_at}\n")
     lines.append("---\n")
@@ -1779,7 +1810,12 @@ async def canvas_list_modules(params: ListModulesInput) -> str:
     if params.search_term:
         api_params["search_term"] = params.search_term
 
-    result = await canvas_api_request(f"/courses/{params.course_id}/modules", params=api_params)
+    timeout = 60 if params.include_items else TIMEOUT_SECONDS
+    result = await canvas_api_request(
+        f"/courses/{params.course_id}/modules",
+        params=api_params,
+        timeout_override=timeout
+    )
 
     if isinstance(result, dict) and "error" in result:
         return f"Error: {result['error']}"
@@ -1941,7 +1977,7 @@ async def fetch_unit_outline(params: FetchUnitOutlineInput) -> str:
         str: Parsed Unit Outline data (Markdown or JSON format)
     """
     # Fetch HTML without authentication
-    async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
+    async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS, follow_redirects=True) as client:
         try:
             response = await client.get(params.unit_outline_url)
             response.raise_for_status()
@@ -2366,6 +2402,97 @@ async def ed_get_lesson(params: EdGetLessonInput) -> str:
         return json.dumps(lesson, indent=2, ensure_ascii=False)
 
     return format_ed_lesson_detail_markdown(lesson, params.include_slide_content)
+
+
+# ============================================================================
+# MCP Tools - Canvas File Download
+# ============================================================================
+
+MAX_DOWNLOAD_SIZE = 50 * 1024 * 1024  # 50MB
+
+
+@mcp.tool(
+    name="canvas_download_file",
+    annotations={
+        "title": "Download Canvas File to Local",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def canvas_download_file(params: DownloadFileInput) -> str:
+    """
+    Download a Canvas file to the local filesystem.
+
+    Gets file metadata via Canvas API, then downloads the file content.
+    Supports files up to 50MB. After downloading, use Claude's Read tool
+    to view PDF content or other file types.
+
+    Args:
+        params (DownloadFileInput): Input parameters
+
+    Returns:
+        str: Download result with file path and details
+    """
+    # Get file metadata
+    result = await canvas_api_request(f"/files/{params.file_id}")
+
+    if isinstance(result, dict) and "error" in result:
+        return f"Error: {result['error']}"
+
+    display_name = result.get('display_name', result.get('filename', 'unknown'))
+    file_size = result.get('size', 0)
+    download_url = result.get('url', '')
+    content_type = result.get('content-type', result.get('content_type', ''))
+
+    if not download_url:
+        return "Error: No download URL available for this file."
+
+    # Check file size limit
+    if file_size > MAX_DOWNLOAD_SIZE:
+        size_mb = file_size / (1024 * 1024)
+        return f"Error: File too large ({size_mb:.1f}MB). Maximum allowed size is 50MB."
+
+    # Determine save path
+    if params.save_path:
+        save_path = params.save_path
+    else:
+        save_path = os.path.join(os.getcwd(), display_name)
+
+    # Create parent directory if needed
+    parent_dir = os.path.dirname(save_path)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
+
+    # Download file
+    async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+        try:
+            headers = get_canvas_headers()
+            response = await client.get(download_url, headers=headers)
+            response.raise_for_status()
+
+            with open(save_path, 'wb') as f:
+                f.write(response.content)
+
+        except httpx.HTTPStatusError as e:
+            return f"Error: Download failed (HTTP {e.response.status_code})"
+        except httpx.TimeoutException:
+            return "Error: Download timed out. The file may be too large."
+        except Exception:
+            return "Error: Failed to download file."
+
+    size_str = format_file_size(file_size)
+
+    lines = ["# File Downloaded Successfully\n"]
+    lines.append(f"- **File**: {display_name}")
+    lines.append(f"- **Size**: {size_str}")
+    lines.append(f"- **Type**: {content_type}")
+    lines.append(f"- **Saved to**: {save_path}")
+    lines.append("")
+    lines.append("*Use Claude's Read tool to view the file content.*")
+
+    return "\n".join(lines)
 
 
 # ============================================================================
