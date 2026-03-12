@@ -567,6 +567,39 @@ class EdGetLessonInput(BaseModel):
 
 
 # ============================================================================
+# HTTP Client Pool (lazy initialization for TCP connection reuse)
+# ============================================================================
+
+_canvas_client: Optional[httpx.AsyncClient] = None
+_ed_client: Optional[httpx.AsyncClient] = None
+_general_client: Optional[httpx.AsyncClient] = None
+
+
+def get_canvas_client() -> httpx.AsyncClient:
+    """Get or create reusable Canvas API HTTP client."""
+    global _canvas_client
+    if _canvas_client is None:
+        _canvas_client = httpx.AsyncClient(timeout=TIMEOUT_SECONDS)
+    return _canvas_client
+
+
+def get_ed_client() -> httpx.AsyncClient:
+    """Get or create reusable Ed API HTTP client."""
+    global _ed_client
+    if _ed_client is None:
+        _ed_client = httpx.AsyncClient(timeout=TIMEOUT_SECONDS)
+    return _ed_client
+
+
+def get_general_client() -> httpx.AsyncClient:
+    """Get or create reusable general HTTP client (for unit outlines, downloads)."""
+    global _general_client
+    if _general_client is None:
+        _general_client = httpx.AsyncClient(timeout=120, follow_redirects=True)
+    return _general_client
+
+
+# ============================================================================
 # API Client Utilities - Canvas
 # ============================================================================
 
@@ -590,26 +623,82 @@ async def canvas_api_request(
     """Send Canvas API request"""
     url = f"{CANVAS_BASE_URL}{endpoint}"
     headers = get_canvas_headers()
+    client = get_canvas_client()
+    req_timeout = httpx.Timeout(timeout_override) if timeout_override else None
 
-    timeout = timeout_override or TIMEOUT_SECONDS
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    try:
+        if method == "GET":
+            response = await client.get(url, headers=headers, params=params, timeout=req_timeout)
+        elif method == "POST":
+            response = await client.post(url, headers=headers, json=data, timeout=req_timeout)
+        else:
+            raise ValueError(f"Unsupported HTTP method: {method}")
+
+        response.raise_for_status()
+        return response.json()
+
+    except httpx.HTTPStatusError as e:
+        return _handle_canvas_error(e)
+    except httpx.TimeoutException:
+        return {"error": "Canvas request timed out. Please try again later."}
+    except Exception:
+        return {"error": "Canvas request failed. Please try again later."}
+
+
+def _parse_next_link(link_header: str) -> Optional[str]:
+    """Parse Canvas Link header to find next page URL."""
+    if not link_header:
+        return None
+    for part in link_header.split(","):
+        if 'rel="next"' in part:
+            url = part.split(";")[0].strip().strip("<>")
+            return url
+    return None
+
+
+async def canvas_api_request_paginated(
+    endpoint: str,
+    params: Optional[Dict[str, Any]] = None,
+    max_pages: int = 10,
+    timeout_override: Optional[int] = None,
+) -> List[Any]:
+    """Auto-paginate Canvas API requests using Link header."""
+    all_results: List[Any] = []
+    url: Optional[str] = f"{CANVAS_BASE_URL}{endpoint}"
+    headers = get_canvas_headers()
+    client = get_canvas_client()
+    req_timeout = httpx.Timeout(timeout_override) if timeout_override else None
+
+    if params is None:
+        params = {}
+    params.setdefault("per_page", 50)
+
+    page = 0
+    while url and page < max_pages:
         try:
-            if method == "GET":
-                response = await client.get(url, headers=headers, params=params)
-            elif method == "POST":
-                response = await client.post(url, headers=headers, json=data)
-            else:
-                raise ValueError(f"Unsupported HTTP method: {method}")
-            
+            response = await client.get(
+                url, headers=headers,
+                params=params if page == 0 else None,
+                timeout=req_timeout,
+            )
             response.raise_for_status()
-            return response.json()
-            
+            data = response.json()
+            if isinstance(data, list):
+                all_results.extend(data)
+            else:
+                all_results.append(data)
+
+            url = _parse_next_link(response.headers.get("link", ""))
+            page += 1
+
         except httpx.HTTPStatusError as e:
-            return _handle_canvas_error(e)
+            return [_handle_canvas_error(e)]
         except httpx.TimeoutException:
-            return {"error": "Canvas request timed out. Please try again later."}
+            return [{"error": "Canvas request timed out. Please try again later."}]
         except Exception:
-            return {"error": "Canvas request failed. Please try again later."}
+            return [{"error": "Canvas request failed. Please try again later."}]
+
+    return all_results
 
 
 def _handle_canvas_error(e: httpx.HTTPStatusError) -> Dict[str, str]:
@@ -651,25 +740,25 @@ async def ed_api_request(
     """Send Ed Discussion API request"""
     url = f"{ED_BASE_URL}{endpoint}"
     headers = get_ed_headers()
-    
-    async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
-        try:
-            if method == "GET":
-                response = await client.get(url, headers=headers, params=params)
-            elif method == "POST":
-                response = await client.post(url, headers=headers, json=data)
-            else:
-                raise ValueError(f"Unsupported HTTP method: {method}")
-            
-            response.raise_for_status()
-            return response.json()
-            
-        except httpx.HTTPStatusError as e:
-            return _handle_ed_error(e)
-        except httpx.TimeoutException:
-            return {"error": "Ed request timed out. Please try again later."}
-        except Exception:
-            return {"error": "Ed request failed. Please try again later."}
+    client = get_ed_client()
+
+    try:
+        if method == "GET":
+            response = await client.get(url, headers=headers, params=params)
+        elif method == "POST":
+            response = await client.post(url, headers=headers, json=data)
+        else:
+            raise ValueError(f"Unsupported HTTP method: {method}")
+
+        response.raise_for_status()
+        return response.json()
+
+    except httpx.HTTPStatusError as e:
+        return _handle_ed_error(e)
+    except httpx.TimeoutException:
+        return {"error": "Ed request timed out. Please try again later."}
+    except Exception:
+        return {"error": "Ed request failed. Please try again later."}
 
 
 def _handle_ed_error(e: httpx.HTTPStatusError) -> Dict[str, str]:
@@ -1397,14 +1486,14 @@ async def canvas_list_courses(params: ListCoursesInput) -> str:
         "include[]": ["term"]
     }
     
-    result = await canvas_api_request("/courses", params=api_params)
-    
-    if isinstance(result, dict) and "error" in result:
-        return f"Error: {result['error']}"
-    
+    result = await canvas_api_request_paginated("/courses", params=api_params)
+
+    if result and isinstance(result[0], dict) and "error" in result[0]:
+        return f"Error: {result[0]['error']}"
+
     if params.response_format == ResponseFormat.JSON:
         return json.dumps(result, indent=2, ensure_ascii=False)
-    
+
     return format_courses_markdown(result)
 
 
@@ -1478,10 +1567,10 @@ async def canvas_list_announcements(params: ListAnnouncementsInput) -> str:
         "per_page": params.limit
     }
     
-    result = await canvas_api_request("/announcements", params=api_params)
+    result = await canvas_api_request_paginated("/announcements", params=api_params)
 
-    if isinstance(result, dict) and "error" in result:
-        return f"Error: {result['error']}"
+    if result and isinstance(result[0], dict) and "error" in result[0]:
+        return f"Error: {result[0]['error']}"
 
     if params.response_format == ResponseFormat.JSON:
         return json.dumps(result, indent=2, ensure_ascii=False)
@@ -1518,10 +1607,12 @@ async def canvas_list_assignments(params: ListAssignmentsInput) -> str:
     if params.include_submissions:
         api_params["include[]"] = ["submission"]
     
-    result = await canvas_api_request(f"/courses/{params.course_id}/assignments", params=api_params)
+    result = await canvas_api_request_paginated(
+        f"/courses/{params.course_id}/assignments", params=api_params
+    )
 
-    if isinstance(result, dict) and "error" in result:
-        return f"Error: {result['error']}"
+    if result and isinstance(result[0], dict) and "error" in result[0]:
+        return f"Error: {result[0]['error']}"
 
     if params.response_format == ResponseFormat.JSON:
         return json.dumps(result, indent=2, ensure_ascii=False)
@@ -1638,10 +1729,12 @@ async def canvas_list_files(params: ListFilesInput) -> str:
     if params.search_term:
         api_params["search_term"] = params.search_term
 
-    result = await canvas_api_request(f"/courses/{params.course_id}/files", params=api_params)
+    result = await canvas_api_request_paginated(
+        f"/courses/{params.course_id}/files", params=api_params
+    )
 
-    if isinstance(result, dict) and "error" in result:
-        return f"Error: {result['error']}"
+    if result and isinstance(result[0], dict) and "error" in result[0]:
+        return f"Error: {result[0]['error']}"
 
     if params.response_format == ResponseFormat.JSON:
         return json.dumps(result, indent=2, ensure_ascii=False)
@@ -1731,10 +1824,12 @@ async def canvas_list_pages(params: ListPagesInput) -> str:
     if params.search_term:
         api_params["search_term"] = params.search_term
 
-    result = await canvas_api_request(f"/courses/{params.course_id}/pages", params=api_params)
+    result = await canvas_api_request_paginated(
+        f"/courses/{params.course_id}/pages", params=api_params
+    )
 
-    if isinstance(result, dict) and "error" in result:
-        return f"Error: {result['error']}"
+    if result and isinstance(result[0], dict) and "error" in result[0]:
+        return f"Error: {result[0]['error']}"
 
     if params.response_format == ResponseFormat.JSON:
         return json.dumps(result, indent=2, ensure_ascii=False)
@@ -1810,15 +1905,15 @@ async def canvas_list_modules(params: ListModulesInput) -> str:
     if params.search_term:
         api_params["search_term"] = params.search_term
 
-    timeout = 60 if params.include_items else TIMEOUT_SECONDS
-    result = await canvas_api_request(
+    timeout = 60 if params.include_items else None
+    result = await canvas_api_request_paginated(
         f"/courses/{params.course_id}/modules",
         params=api_params,
-        timeout_override=timeout
+        timeout_override=timeout,
     )
 
-    if isinstance(result, dict) and "error" in result:
-        return f"Error: {result['error']}"
+    if result and isinstance(result[0], dict) and "error" in result[0]:
+        return f"Error: {result[0]['error']}"
 
     if params.response_format == ResponseFormat.JSON:
         return json.dumps(result, indent=2, ensure_ascii=False)
@@ -1854,13 +1949,13 @@ async def canvas_list_module_items(params: ListModuleItemsInput) -> str:
     if params.include_content_details:
         api_params["include[]"] = "content_details"
 
-    result = await canvas_api_request(
+    result = await canvas_api_request_paginated(
         f"/courses/{params.course_id}/modules/{params.module_id}/items",
-        params=api_params
+        params=api_params,
     )
 
-    if isinstance(result, dict) and "error" in result:
-        return f"Error: {result['error']}"
+    if result and isinstance(result[0], dict) and "error" in result[0]:
+        return f"Error: {result[0]['error']}"
 
     if params.response_format == ResponseFormat.JSON:
         return json.dumps(result, indent=2, ensure_ascii=False)
@@ -1977,17 +2072,17 @@ async def fetch_unit_outline(params: FetchUnitOutlineInput) -> str:
         str: Parsed Unit Outline data (Markdown or JSON format)
     """
     # Fetch HTML without authentication
-    async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS, follow_redirects=True) as client:
-        try:
-            response = await client.get(params.unit_outline_url)
-            response.raise_for_status()
-            html = response.text
-        except httpx.HTTPStatusError as e:
-            return f"Error: Failed to fetch Unit Outline (HTTP {e.response.status_code})"
-        except httpx.TimeoutException:
-            return "Error: Unit Outline request timed out."
-        except Exception:
-            return "Error: Failed to fetch Unit Outline page."
+    client = get_general_client()
+    try:
+        response = await client.get(params.unit_outline_url)
+        response.raise_for_status()
+        html = response.text
+    except httpx.HTTPStatusError as e:
+        return f"Error: Failed to fetch Unit Outline (HTTP {e.response.status_code})"
+    except httpx.TimeoutException:
+        return "Error: Unit Outline request timed out."
+    except Exception:
+        return "Error: Failed to fetch Unit Outline page."
 
     # Parse HTML
     outline_data = parse_unit_outline_html(html)
@@ -2050,10 +2145,10 @@ async def canvas_list_calendar(params: ListCalendarInput) -> str:
     if params.end_date:
         api_params["end_date"] = params.end_date
 
-    result = await canvas_api_request("/calendar_events", params=api_params)
+    result = await canvas_api_request_paginated("/calendar_events", params=api_params)
 
-    if isinstance(result, dict) and "error" in result:
-        return f"Error: {result['error']}"
+    if result and isinstance(result[0], dict) and "error" in result[0]:
+        return f"Error: {result[0]['error']}"
 
     if params.response_format == ResponseFormat.JSON:
         return json.dumps(result, indent=2, ensure_ascii=False)
@@ -2465,22 +2560,22 @@ async def canvas_download_file(params: DownloadFileInput) -> str:
     if parent_dir:
         os.makedirs(parent_dir, exist_ok=True)
 
-    # Download file
-    async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
-        try:
-            headers = get_canvas_headers()
-            response = await client.get(download_url, headers=headers)
+    # Download file with streaming to avoid loading entire file into memory
+    client = get_general_client()
+    try:
+        headers = get_canvas_headers()
+        async with client.stream("GET", download_url, headers=headers) as response:
             response.raise_for_status()
-
             with open(save_path, 'wb') as f:
-                f.write(response.content)
+                async for chunk in response.aiter_bytes(chunk_size=8192):
+                    f.write(chunk)
 
-        except httpx.HTTPStatusError as e:
-            return f"Error: Download failed (HTTP {e.response.status_code})"
-        except httpx.TimeoutException:
-            return "Error: Download timed out. The file may be too large."
-        except Exception:
-            return "Error: Failed to download file."
+    except httpx.HTTPStatusError as e:
+        return f"Error: Download failed (HTTP {e.response.status_code})"
+    except httpx.TimeoutException:
+        return "Error: Download timed out. The file may be too large."
+    except Exception:
+        return "Error: Failed to download file."
 
     size_str = format_file_size(file_size)
 
