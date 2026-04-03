@@ -444,7 +444,15 @@ class EdUserInfoInput(BaseModel):
 class EdListCoursesInput(BaseModel):
     """Input parameters for getting Ed course list"""
     model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
-    
+
+    year: Optional[str] = Field(
+        default=None,
+        description="Filter by year (e.g., '2026'). Filters out courses from other years."
+    )
+    session: Optional[str] = Field(
+        default=None,
+        description="Filter by session (e.g., 'Semester 1'). Filters out courses from other sessions."
+    )
     response_format: ResponseFormat = Field(
         default=ResponseFormat.MARKDOWN,
         description="Output format"
@@ -559,6 +567,25 @@ class EdGetLessonInput(BaseModel):
     include_slide_content: bool = Field(
         default=True,
         description="Whether to include parsed slide content in the output"
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format"
+    )
+
+
+# ============================================================================
+# Input Models - Cross-Verification
+# ============================================================================
+
+class VerifyAssessmentCoverageInput(BaseModel):
+    """Input parameters for cross-verifying assessment coverage between Unit Outline and Canvas"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    course_id: str = Field(
+        ...,
+        description="Canvas course ID (e.g., '69874')",
+        min_length=1
     )
     response_format: ResponseFormat = Field(
         default=ResponseFormat.MARKDOWN,
@@ -2268,26 +2295,39 @@ async def ed_get_user_info(params: EdUserInfoInput) -> str:
 async def ed_list_courses(params: EdListCoursesInput) -> str:
     """
     Get all courses the current user has on Ed Discussion.
-    
+
     Returns course name, course code, and Ed course ID.
     Use Ed course ID to get discussion threads for that course.
-    
+    Supports optional year and session filters to reduce response size.
+
     Args:
         params (EdListCoursesInput): Input parameters
-    
+
     Returns:
         str: Ed course list
     """
     result = await ed_api_request("/user")
-    
+
     if isinstance(result, dict) and "error" in result:
         return f"Error: {result['error']}"
-    
+
     courses = result.get('courses', [])
-    
+
+    # Apply client-side year/session filters
+    if params.year or params.session:
+        filtered = []
+        for enrollment in courses:
+            course = enrollment.get('course', enrollment)
+            if params.year and str(course.get('year', '')) != params.year:
+                continue
+            if params.session and course.get('session', '') != params.session:
+                continue
+            filtered.append(enrollment)
+        courses = filtered
+
     if params.response_format == ResponseFormat.JSON:
         return json.dumps(courses, indent=2, ensure_ascii=False)
-    
+
     return format_ed_courses_markdown(courses)
 
 
@@ -2503,6 +2543,166 @@ async def ed_get_lesson(params: EdGetLessonInput) -> str:
         return json.dumps(lesson, indent=2, ensure_ascii=False)
 
     return format_ed_lesson_detail_markdown(lesson, params.include_slide_content)
+
+
+# ============================================================================
+# MCP Tools - Cross-Verification
+# ============================================================================
+
+@mcp.tool(
+    name="verify_assessment_coverage",
+    annotations={  # type: ignore[arg-type]
+        "title": "Verify Assessment Coverage",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def verify_assessment_coverage(params: VerifyAssessmentCoverageInput) -> str:
+    """
+    Cross-verify assessment coverage between Unit Outline and Canvas assignments.
+
+    Fetches the Unit Outline assessment count (via course tabs -> external tool -> HTML parse)
+    and Canvas assignments count, then compares them and warns if there is a mismatch.
+
+    Args:
+        params (VerifyAssessmentCoverageInput): Input parameters
+
+    Returns:
+        str: Verification result with match/mismatch details
+    """
+    course_name = await get_course_name(params.course_id)
+
+    # Step 1: Get Canvas assignments
+    assignment_params: Dict[str, Any] = {"per_page": MAX_PAGE_SIZE, "order_by": "due_at"}
+    canvas_assignments = await canvas_api_request_paginated(
+        f"/courses/{params.course_id}/assignments", params=assignment_params
+    )
+
+    if canvas_assignments and isinstance(canvas_assignments[0], dict) and "error" in canvas_assignments[0]:
+        return f"Error fetching Canvas assignments: {canvas_assignments[0]['error']}"
+
+    # Step 2: Get Unit Outline URL from course tabs
+    tabs = await canvas_api_request(f"/courses/{params.course_id}/tabs")
+
+    if isinstance(tabs, dict) and "error" in tabs:
+        return f"Error fetching course tabs: {tabs['error']}"
+
+    outline_tab = None
+    if isinstance(tabs, list):
+        for tab in tabs:
+            if 'Unit Outline' in tab.get('label', ''):
+                outline_tab = tab
+                break
+
+    outline_assessments: List[Dict[str, Any]] = []
+    outline_status = "not_found"
+
+    if outline_tab:
+        tab_id = str(outline_tab.get('id', ''))
+        tool_id = tab_id.replace(CANVAS_EXTERNAL_TOOL_TAB_PREFIX, '')
+
+        if tool_id and tool_id != tab_id:
+            tool = await canvas_api_request(f"/courses/{params.course_id}/external_tools/{tool_id}")
+
+            if isinstance(tool, dict) and "error" not in tool:
+                unit_outline_url = tool.get('custom_fields', {}).get('url', '')
+
+                if unit_outline_url:
+                    # Fetch and parse Unit Outline HTML
+                    client = get_general_client()
+                    try:
+                        response = await client.get(unit_outline_url)
+                        response.raise_for_status()
+                        outline_data = parse_unit_outline_html(response.text)
+                        outline_assessments = outline_data.get("assessment_structure", [])
+                        outline_status = "ok"
+                    except Exception:
+                        outline_status = "fetch_error"
+                else:
+                    outline_status = "no_url"
+            else:
+                outline_status = "tool_error"
+        else:
+            outline_status = "bad_tab_id"
+
+    # Step 3: Compare counts
+    canvas_count = len(canvas_assignments)
+    outline_count = len(outline_assessments)
+
+    if params.response_format == ResponseFormat.JSON:
+        return json.dumps({
+            "course_id": params.course_id,
+            "course_name": course_name,
+            "canvas_assignment_count": canvas_count,
+            "unit_outline_assessment_count": outline_count,
+            "outline_status": outline_status,
+            "match": canvas_count == outline_count,
+            "canvas_assignments": [a.get("name", "") for a in canvas_assignments],
+            "outline_assessments": [a.get("name", "") for a in outline_assessments],
+        }, indent=2, ensure_ascii=False)
+
+    # Format as Markdown
+    title = f"# Assessment Coverage Verification"
+    if course_name:
+        title += f" - {course_name}"
+    title += "\n"
+
+    lines = [title]
+
+    # Outline status
+    if outline_status != "ok":
+        status_messages = {
+            "not_found": "No Unit Outline tab found for this course.",
+            "fetch_error": "Failed to fetch Unit Outline page.",
+            "no_url": "Unit Outline URL not found in external tool configuration.",
+            "tool_error": "Failed to fetch external tool details.",
+            "bad_tab_id": "Could not extract tool ID from tab.",
+        }
+        lines.append(f"**Unit Outline**: {status_messages.get(outline_status, 'Unknown error')}")
+        lines.append(f"**Canvas Assignments**: {canvas_count}\n")
+        lines.append("Cannot perform comparison — Unit Outline data unavailable.")
+        return "\n".join(lines)
+
+    # Comparison result
+    if canvas_count == outline_count:
+        lines.append(f"**Status**: MATCH\n")
+    else:
+        lines.append(f"**Status**: MISMATCH\n")
+
+    lines.append(f"| Source | Count |")
+    lines.append(f"|--------|-------|")
+    lines.append(f"| Unit Outline Assessments | {outline_count} |")
+    lines.append(f"| Canvas Assignments | {canvas_count} |")
+    lines.append("")
+
+    if canvas_count != outline_count:
+        diff = abs(canvas_count - outline_count)
+        if canvas_count > outline_count:
+            lines.append(f"**Warning**: Canvas has {diff} more assignment(s) than the Unit Outline.")
+        else:
+            lines.append(f"**Warning**: Unit Outline has {diff} more assessment(s) than Canvas.")
+        lines.append("This may indicate missing assignments or extra items on either side.\n")
+
+    # List details
+    if outline_assessments:
+        lines.append("## Unit Outline Assessments\n")
+        for i, a in enumerate(outline_assessments, 1):
+            name = a.get("name", "Unnamed")
+            weight = a.get("weight", "")
+            lines.append(f"{i}. **{name}** — {weight}")
+        lines.append("")
+
+    if canvas_assignments:
+        lines.append("## Canvas Assignments\n")
+        for i, a in enumerate(canvas_assignments, 1):
+            name = a.get("name", "Unnamed")
+            due = format_datetime(a.get("due_at"))
+            lines.append(f"{i}. **{name}** — Due: {due}")
+        lines.append("")
+
+    return "\n".join(lines)
 
 
 # ============================================================================
