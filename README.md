@@ -1,6 +1,6 @@
-# Canvas + Ed Discussion MCP Server
-
 <div align="center">
+
+# Canvas + Ed Discussion MCP Server
 
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![MCP](https://img.shields.io/badge/MCP-Server-FF6B35?style=flat-square)](https://modelcontextprotocol.io)
