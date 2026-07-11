@@ -17,25 +17,37 @@
 
 ## Features
 
-### Canvas Features
-- **canvas_list_courses** - Get Canvas course list
-- **canvas_get_course** - Get course details
-- **canvas_list_announcements** - Get course announcements
-- **canvas_list_assignments** - Get assignment list
+43 tools across Canvas LMS, Ed Discussion, and Gradescope.
 
-### Ed Discussion Features
-- **ed_get_user_info** - Get Ed user information (verify token)
-- **ed_list_courses** - Get Ed course list
-- **ed_list_threads** - Get discussion thread list
-- **ed_get_thread** - Get thread details and replies
-- **ed_search_threads** - Search threads
+### Canvas — course content (read)
+`canvas_list_courses` · `canvas_get_course` · `canvas_list_announcements` · `canvas_list_assignments` · `canvas_get_grades` · `canvas_get_all_grades` (all courses, one call) · `canvas_list_files` · `canvas_get_file_content` · `canvas_download_file` · `canvas_list_pages` · `canvas_get_page` · `canvas_list_modules` · `canvas_list_module_items` · `canvas_list_calendar` · `canvas_get_syllabus` · `canvas_get_unit_outline_url` · `fetch_unit_outline` (USYD unit outline parser)
+
+### Canvas — student dashboard (read)
+`canvas_get_todo` · `canvas_get_upcoming` · `canvas_get_missing_submissions` · `canvas_get_submission_status` (per-course, grouped by state) · `canvas_get_my_submission` (marker feedback + rubric) · `canvas_get_peer_reviews` · `canvas_list_discussions` · `canvas_get_discussion` (full threaded view)
+
+### Canvas — write
+`canvas_submit_assignment` (text / URL / file upload) · `canvas_post_discussion_entry` (post or reply)
+
+### Ed Discussion — read
+`ed_get_user_info` · `ed_list_courses` · `ed_list_threads` · `ed_get_thread` · `ed_search_threads` · `ed_list_lessons` · `ed_get_lesson` (slides + content)
+
+### Ed Discussion — write
+`ed_post_thread` · `ed_edit_thread` · `ed_post_comment` (comment or answer) · `ed_reply_to_comment` · `ed_accept_answer` · `ed_thread_action` (star/unstar; staff: pin/lock/endorse)
+
+Write content is markdown — automatically converted to Ed's XML document format (headings, bold/italic, code spans/blocks, lists, links, math, callouts).
+
+### Gradescope (read)
+`gradescope_list_courses` · `gradescope_list_assignments` (due dates, submission status, grades)
+
+### Cross-platform
+`verify_assessment_coverage` (Unit Outline vs Canvas assignments)
 
 ## Installation
 
 ### 1. Install Dependencies
 
 ```bash
-pip install mcp httpx pydantic
+pip install -r requirements.txt
 ```
 
 ### 2. Configure Claude Desktop
@@ -57,12 +69,19 @@ Add the following configuration:
       ],
       "env": {
         "CANVAS_API_TOKEN": "your_Canvas_API_Token",
-        "ED_API_TOKEN": "your_Ed_API_Token"
+        "ED_API_TOKEN": "your_Ed_API_Token",
+        "GRADESCOPE_EMAIL": "your_email (optional, for Gradescope tools)",
+        "GRADESCOPE_PASSWORD": "your_password (optional)"
       }
     }
   }
 }
 ```
+
+> Gradescope has no official API — tools use the maintained
+> [gradescopeapi](https://pypi.org/project/gradescopeapi/) scraping library.
+> University SSO accounts must first set a native Gradescope password via
+> the "forgot password" flow on gradescope.com.
 
 ### 3. Restart Claude Desktop
 
@@ -104,7 +123,6 @@ Get detailed content and replies for Ed thread ID 67890
 
 ### Canvas API Token
 - Source: Canvas → Account → Settings → Approved Integrations → + New Access Token
-- Valid until: March 18, 2026
 
 ### Ed Discussion API Token
 - Source: Ed Discussion → Settings → API
@@ -160,10 +178,9 @@ Ed Discussion uses a special XML format to store thread content. The MCP server 
 
 ```
 canvas-ed-mcp/
-├── canvas_ed_mcp.py           # Full MCP server (Canvas + Ed)
-├── canvas_api_mcp.py          # Canvas-only version
+├── canvas_ed_mcp.py           # Full MCP server (Canvas + Ed + Gradescope)
 ├── requirements.txt           # Python dependencies
-├── claude_desktop_config_full.json  # Full configuration example
+├── claude_desktop_config_example.json  # Configuration example
 └── README.md                  # This document
 ```
 
@@ -179,25 +196,22 @@ canvas-ed-mcp/
 
 ### 功能特性
 
-#### Canvas 功能
-- **canvas_list_courses** - 获取 Canvas 课程列表
-- **canvas_get_course** - 获取课程详情
-- **canvas_list_announcements** - 获取课程公告
-- **canvas_list_assignments** - 获取作业列表
+共 43 个工具，覆盖 Canvas、Ed Discussion、Gradescope 三个平台：
 
-#### Ed Discussion 功能
-- **ed_get_user_info** - 获取 Ed 用户信息（验证令牌）
-- **ed_list_courses** - 获取 Ed 课程列表
-- **ed_list_threads** - 获取讨论帖列表
-- **ed_get_thread** - 获取帖子详情和回复
-- **ed_search_threads** - 搜索帖子
+- **Canvas 读取**：课程 / 公告 / 作业 / 成绩（单课明细 + 全部课程一次拉取）/ 文件 / 页面 / 模块 / 日历 / syllabus / USYD unit outline 解析
+- **Canvas 学生仪表盘**：待办、即将截止、缺交清单、按提交状态分组、我的提交与批改反馈（评语 + rubric）、peer review、讨论区
+- **Canvas 写入**：交作业（文本 / URL / 文件上传）、讨论区发帖回帖
+- **Ed 读取**：课程 / 帖子 / 搜索 / Lessons（含 slides）
+- **Ed 写入**：发帖、编辑、评论 / 回答、回复、采纳答案、star 收藏（markdown 自动转 Ed XML 格式）
+- **Gradescope 读取**：课程、作业（截止时间 / 提交状态 / 分数）
+- **跨平台**：Unit Outline 与 Canvas 作业对账
 
 ### 安装步骤
 
 #### 1. 安装依赖
 
 ```bash
-pip install mcp httpx pydantic
+pip install -r requirements.txt
 ```
 
 #### 2. 配置 Claude Desktop

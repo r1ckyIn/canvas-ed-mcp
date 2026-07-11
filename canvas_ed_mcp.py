@@ -7,7 +7,9 @@ MCP server supporting both Canvas REST API and Ed Discussion API.
 """
 
 import asyncio
+import dataclasses
 import json
+import mimetypes
 import os
 import re
 from datetime import datetime
@@ -30,6 +32,11 @@ CANVAS_API_TOKEN = os.getenv("CANVAS_API_TOKEN", "")
 # University of Sydney uses Australia region
 ED_BASE_URL = "https://edstem.org/api"
 ED_API_TOKEN = os.getenv("ED_API_TOKEN", "")
+
+# Gradescope Configuration (no official API; gradescopeapi scrapes the site.
+# SSO accounts must set a native password via Gradescope's "forgot password")
+GRADESCOPE_EMAIL = os.getenv("GRADESCOPE_EMAIL", "")
+GRADESCOPE_PASSWORD = os.getenv("GRADESCOPE_PASSWORD", "")
 
 # HTTP Client Configuration
 TIMEOUT_SECONDS = 30
@@ -76,6 +83,38 @@ class ThreadSort(str, Enum):
     OLD = "old"
     TOP = "top"
     HOT = "hot"
+
+
+class SubmissionType(str, Enum):
+    """Canvas assignment submission type"""
+    TEXT = "online_text_entry"
+    URL = "online_url"
+    UPLOAD = "online_upload"
+
+
+class EdThreadType(str, Enum):
+    """Ed Discussion thread type"""
+    POST = "post"
+    QUESTION = "question"
+    ANNOUNCEMENT = "announcement"
+
+
+class EdCommentType(str, Enum):
+    """Ed Discussion comment type"""
+    COMMENT = "comment"
+    ANSWER = "answer"
+
+
+class EdThreadAction(str, Enum):
+    """Ed Discussion thread toggle action"""
+    STAR = "star"
+    UNSTAR = "unstar"
+    PIN = "pin"
+    UNPIN = "unpin"
+    LOCK = "lock"
+    UNLOCK = "unlock"
+    ENDORSE = "endorse"
+    UNENDORSE = "unendorse"
 
 
 # ============================================================================
@@ -428,6 +467,226 @@ class GetSyllabusInput(BaseModel):
 
 
 # ============================================================================
+# Input Models - Canvas Student Dashboard
+# ============================================================================
+
+class GetTodoInput(BaseModel):
+    """Input parameters for getting the current user's Canvas to-do list"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    limit: int = Field(
+        default=DEFAULT_PAGE_SIZE,
+        description="Number of to-do items to return",
+        ge=1, le=MAX_PAGE_SIZE
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format"
+    )
+
+
+class GetUpcomingInput(BaseModel):
+    """Input parameters for getting the current user's upcoming Canvas events"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format"
+    )
+
+
+class GetMissingSubmissionsInput(BaseModel):
+    """Input parameters for getting the current user's missing (past-due, unsubmitted) assignments"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    course_ids: Optional[List[str]] = Field(
+        default=None,
+        description="Canvas course IDs to filter (e.g., ['69855']). If not provided, checks all courses."
+    )
+    limit: int = Field(
+        default=DEFAULT_PAGE_SIZE,
+        description="Number of assignments to return",
+        ge=1, le=MAX_PAGE_SIZE
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format"
+    )
+
+
+class GetSubmissionStatusInput(BaseModel):
+    """Input parameters for getting per-assignment submission status in a Canvas course"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    course_id: str = Field(
+        ...,
+        description="Canvas course ID (e.g., '69855')",
+        min_length=1
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format"
+    )
+
+
+class ListDiscussionsInput(BaseModel):
+    """Input parameters for getting Canvas course discussion topics"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    course_id: str = Field(
+        ...,
+        description="Canvas course ID",
+        min_length=1
+    )
+    limit: int = Field(
+        default=DEFAULT_PAGE_SIZE,
+        description="Number of discussion topics to return",
+        ge=1, le=MAX_PAGE_SIZE
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format"
+    )
+
+
+class GetDiscussionInput(BaseModel):
+    """Input parameters for getting a Canvas discussion topic with all entries"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    course_id: str = Field(
+        ...,
+        description="Canvas course ID",
+        min_length=1
+    )
+    topic_id: str = Field(
+        ...,
+        description="Discussion topic ID (obtained from canvas_list_discussions)",
+        min_length=1
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format"
+    )
+
+
+class GetAllGradesInput(BaseModel):
+    """Input parameters for getting grades across all Canvas courses in one call"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    enrollment_state: EnrollmentState = Field(
+        default=EnrollmentState.ACTIVE,
+        description="Course enrollment state filter: 'active', 'completed', or 'all'"
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format"
+    )
+
+
+class GetMySubmissionInput(BaseModel):
+    """Input parameters for getting your own submission with feedback for an assignment"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    course_id: str = Field(
+        ...,
+        description="Canvas course ID",
+        min_length=1
+    )
+    assignment_id: str = Field(
+        ...,
+        description="Canvas assignment ID",
+        min_length=1
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format"
+    )
+
+
+class GetPeerReviewsInput(BaseModel):
+    """Input parameters for getting your assigned peer reviews in a course"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    course_id: str = Field(
+        ...,
+        description="Canvas course ID",
+        min_length=1
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format"
+    )
+
+
+# ============================================================================
+# Input Models - Canvas Write Operations
+# ============================================================================
+
+class SubmitAssignmentInput(BaseModel):
+    """Input parameters for submitting a Canvas assignment"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    course_id: str = Field(
+        ...,
+        description="Canvas course ID",
+        min_length=1
+    )
+    assignment_id: str = Field(
+        ...,
+        description="Canvas assignment ID (obtained from canvas_list_assignments)",
+        min_length=1
+    )
+    submission_type: SubmissionType = Field(
+        ...,
+        description=(
+            "Submission type: 'online_text_entry' (text body), "
+            "'online_url' (a URL), or 'online_upload' (local files)"
+        )
+    )
+    body: Optional[str] = Field(
+        default=None,
+        description="Text content for online_text_entry submissions (HTML allowed)"
+    )
+    url: Optional[str] = Field(
+        default=None,
+        description="URL for online_url submissions"
+    )
+    file_paths: Optional[List[str]] = Field(
+        default=None,
+        description="Absolute local file paths for online_upload submissions"
+    )
+    comment: Optional[str] = Field(
+        default=None,
+        description="Optional submission comment visible to markers"
+    )
+
+
+class PostDiscussionEntryInput(BaseModel):
+    """Input parameters for posting to a Canvas discussion"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    course_id: str = Field(
+        ...,
+        description="Canvas course ID",
+        min_length=1
+    )
+    topic_id: str = Field(
+        ...,
+        description="Discussion topic ID (obtained from canvas_list_discussions)",
+        min_length=1
+    )
+    message: str = Field(
+        ...,
+        description="Message content (HTML allowed)",
+        min_length=1
+    )
+    reply_to_entry_id: Optional[str] = Field(
+        default=None,
+        description="Entry ID to reply to. If omitted, posts a new top-level entry."
+    )
+
+
+# ============================================================================
 # Input Models - Ed Discussion
 # ============================================================================
 
@@ -537,6 +796,165 @@ class EdSearchThreadsInput(BaseModel):
 
 
 # ============================================================================
+# Input Models - Ed Write Operations
+# ============================================================================
+
+class EdPostThreadInput(BaseModel):
+    """Input parameters for posting a new Ed Discussion thread"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    course_id: int = Field(
+        ...,
+        description="Ed course ID (obtained from ed_list_courses)",
+        gt=0
+    )
+    title: str = Field(
+        ...,
+        description="Thread title",
+        min_length=1
+    )
+    content: str = Field(
+        ...,
+        description="Thread content in markdown (converted to Ed XML automatically)",
+        min_length=1
+    )
+    thread_type: EdThreadType = Field(
+        default=EdThreadType.QUESTION,
+        description="Thread type: 'question' (answerable), 'post' (general), 'announcement' (staff)"
+    )
+    category: str = Field(
+        ...,
+        description="Thread category — must match an existing course category exactly (e.g., 'General', 'Assignments'; see categories in ed_list_threads output)",
+        min_length=1
+    )
+    subcategory: str = Field(
+        default="",
+        description="Optional subcategory (must match an existing one)"
+    )
+    is_private: bool = Field(
+        default=False,
+        description="If true, only staff and you can see the thread"
+    )
+    is_anonymous: bool = Field(
+        default=False,
+        description="If true, your name is hidden from other students"
+    )
+
+
+class EdEditThreadInput(BaseModel):
+    """Input parameters for editing an existing Ed Discussion thread"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    thread_id: int = Field(
+        ...,
+        description="Ed thread ID (your own thread, or staff permissions required)",
+        gt=0
+    )
+    title: Optional[str] = Field(
+        default=None,
+        description="New title (unchanged if omitted)"
+    )
+    content: Optional[str] = Field(
+        default=None,
+        description="New content in markdown (unchanged if omitted)"
+    )
+    category: Optional[str] = Field(
+        default=None,
+        description="New category (unchanged if omitted)"
+    )
+    subcategory: Optional[str] = Field(
+        default=None,
+        description="New subcategory (unchanged if omitted)"
+    )
+
+
+class EdPostCommentInput(BaseModel):
+    """Input parameters for posting a comment or answer on an Ed thread"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    thread_id: int = Field(
+        ...,
+        description="Ed thread ID to comment on",
+        gt=0
+    )
+    content: str = Field(
+        ...,
+        description="Comment content in markdown (converted to Ed XML automatically)",
+        min_length=1
+    )
+    comment_type: EdCommentType = Field(
+        default=EdCommentType.COMMENT,
+        description="'answer' to answer a question thread, 'comment' for a discussion comment"
+    )
+    is_private: bool = Field(
+        default=False,
+        description="If true, only staff and you can see the comment"
+    )
+    is_anonymous: bool = Field(
+        default=False,
+        description="If true, your name is hidden from other students"
+    )
+
+
+class EdReplyToCommentInput(BaseModel):
+    """Input parameters for replying to an existing Ed comment"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    comment_id: int = Field(
+        ...,
+        description="Ed comment ID to reply to (from ed_get_thread JSON output)",
+        gt=0
+    )
+    content: str = Field(
+        ...,
+        description="Reply content in markdown (converted to Ed XML automatically)",
+        min_length=1
+    )
+    is_private: bool = Field(
+        default=False,
+        description="If true, only staff and you can see the reply"
+    )
+    is_anonymous: bool = Field(
+        default=False,
+        description="If true, your name is hidden from other students"
+    )
+
+
+class EdAcceptAnswerInput(BaseModel):
+    """Input parameters for accepting an answer on your Ed question thread"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    thread_id: int = Field(
+        ...,
+        description="Ed question thread ID (must be your own thread)",
+        gt=0
+    )
+    comment_id: int = Field(
+        ...,
+        description="ID of the answer comment to accept",
+        gt=0
+    )
+
+
+class EdThreadActionInput(BaseModel):
+    """Input parameters for toggling an Ed thread state"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    thread_id: int = Field(
+        ...,
+        description="Ed thread ID",
+        gt=0
+    )
+    action: EdThreadAction = Field(
+        ...,
+        description=(
+            "Action to perform. 'star'/'unstar' work for students (private bookmark); "
+            "'pin'/'unpin'/'lock'/'unlock'/'endorse'/'unendorse' require staff role"
+        )
+    )
+
+
+# ============================================================================
 # Input Models - Ed Lessons
 # ============================================================================
 
@@ -567,6 +985,35 @@ class EdGetLessonInput(BaseModel):
     include_slide_content: bool = Field(
         default=True,
         description="Whether to include parsed slide content in the output"
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format"
+    )
+
+
+# ============================================================================
+# Input Models - Gradescope
+# ============================================================================
+
+class GradescopeListCoursesInput(BaseModel):
+    """Input parameters for listing Gradescope courses"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format"
+    )
+
+
+class GradescopeListAssignmentsInput(BaseModel):
+    """Input parameters for listing Gradescope assignments in a course"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    course_id: str = Field(
+        ...,
+        description="Gradescope course ID (obtained from gradescope_list_courses)",
+        min_length=1
     )
     response_format: ResponseFormat = Field(
         default=ResponseFormat.MARKDOWN,
@@ -746,6 +1193,83 @@ def _handle_canvas_error(e: httpx.HTTPStatusError) -> Dict[str, str]:
     return {"error": error_msg}
 
 
+async def canvas_upload_file(upload_endpoint: str, file_path: str) -> Dict[str, Any]:
+    """
+    Upload a local file to Canvas using the standard three-step upload flow.
+
+    1. POST the upload endpoint to reserve an upload slot
+    2. POST the file bytes to the returned upload_url with upload_params
+    3. Confirm the upload (follow the redirect / location with auth)
+
+    Returns the Canvas file object dict, or {"error": ...} on failure.
+    """
+    if not os.path.isfile(file_path):
+        return {"error": f"File not found: {file_path}"}
+
+    file_name = os.path.basename(file_path)
+    file_size = os.path.getsize(file_path)
+    content_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+
+    slot = await canvas_api_request(
+        upload_endpoint, method="POST",
+        data={
+            "name": file_name,
+            "size": file_size,
+            "content_type": content_type,
+            "on_duplicate": "rename"
+        }
+    )
+    if not isinstance(slot, dict):
+        return {"error": "Unexpected response when reserving Canvas upload slot."}
+    if "error" in slot:
+        return slot
+
+    upload_url = slot.get("upload_url")
+    upload_params = slot.get("upload_params", {})
+    if not upload_url:
+        return {"error": "Canvas did not return an upload URL."}
+
+    # The storage endpoint (e.g. S3) must be called WITHOUT the Canvas auth
+    # header, and the redirect it returns must be confirmed WITH it, so
+    # redirects are handled manually here.
+    client = get_general_client()
+    try:
+        with open(file_path, 'rb') as fh:
+            upload_response = await client.post(
+                upload_url,
+                data=upload_params,
+                files={"file": (file_name, fh)},
+                follow_redirects=False
+            )
+
+        if 300 <= upload_response.status_code < 400:
+            confirm_url = upload_response.headers.get("location", "")
+            if not confirm_url:
+                return {"error": "Canvas upload confirmation URL missing."}
+            confirm_response = await client.get(
+                confirm_url, headers=get_canvas_headers()
+            )
+            confirm_response.raise_for_status()
+            return confirm_response.json()
+
+        upload_response.raise_for_status()
+        result = upload_response.json()
+        if isinstance(result, dict) and "id" not in result and result.get("location"):
+            confirm_response = await client.get(
+                result["location"], headers=get_canvas_headers()
+            )
+            confirm_response.raise_for_status()
+            return confirm_response.json()
+        return result
+
+    except httpx.HTTPStatusError as e:
+        return {"error": f"File upload failed (HTTP {e.response.status_code})."}
+    except httpx.TimeoutException:
+        return {"error": "File upload timed out. The file may be too large."}
+    except Exception:
+        return {"error": "File upload failed."}
+
+
 # ============================================================================
 # API Client Utilities - Ed Discussion
 # ============================================================================
@@ -767,7 +1291,12 @@ async def ed_api_request(
     params: Optional[Dict[str, Any]] = None,
     data: Optional[Dict[str, Any]] = None
 ) -> Any:
-    """Send Ed Discussion API request"""
+    """
+    Send Ed Discussion API request.
+
+    Returns parsed JSON, or None for void endpoints (e.g. accept/star
+    toggles return an empty body on success), or {"error": ...} on failure.
+    """
     url = f"{ED_BASE_URL}{endpoint}"
     headers = get_ed_headers()
     client = get_ed_client()
@@ -777,10 +1306,14 @@ async def ed_api_request(
             response = await client.get(url, headers=headers, params=params)
         elif method == "POST":
             response = await client.post(url, headers=headers, json=data)
+        elif method == "PUT":
+            response = await client.put(url, headers=headers, json=data)
         else:
             raise ValueError(f"Unsupported HTTP method: {method}")
 
         response.raise_for_status()
+        if not response.content:
+            return None
         return response.json()
 
     except httpx.HTTPStatusError as e:
@@ -810,6 +1343,73 @@ async def get_course_name(course_id: str) -> str:
     if isinstance(course, dict) and "error" not in course:
         return course.get('name', '')
     return ''
+
+
+# ============================================================================
+# API Client Utilities - Gradescope
+# ============================================================================
+
+_gradescope_connection: Optional[Any] = None
+
+
+def _gradescope_login() -> Any:
+    """Create and log in a Gradescope session (blocking; run in a thread)."""
+    from gradescopeapi.classes.connection import GSConnection
+
+    connection = GSConnection()
+    connection.login(GRADESCOPE_EMAIL, GRADESCOPE_PASSWORD)
+    return connection
+
+
+async def get_gradescope_connection() -> Any:
+    """
+    Get or create the shared Gradescope session.
+
+    Returns the connection, or {"error": ...} when credentials are missing,
+    the gradescopeapi package is absent, or login fails.
+    """
+    # ponytail: process-wide singleton session, no expiry handling —
+    # restart the server if Gradescope invalidates the cookie
+    global _gradescope_connection
+    if not GRADESCOPE_EMAIL or not GRADESCOPE_PASSWORD:
+        return {"error": (
+            "Gradescope credentials not configured. Set GRADESCOPE_EMAIL and "
+            "GRADESCOPE_PASSWORD environment variables. SSO accounts must "
+            "first set a native password via 'forgot password' on gradescope.com."
+        )}
+    if _gradescope_connection is not None and getattr(
+        _gradescope_connection, "logged_in", False
+    ):
+        return _gradescope_connection
+    try:
+        _gradescope_connection = await asyncio.to_thread(_gradescope_login)
+    except ImportError:
+        return {"error": (
+            "gradescopeapi package not installed. Run: pip install gradescopeapi"
+        )}
+    except ValueError:
+        return {"error": (
+            "Gradescope login failed. Check GRADESCOPE_EMAIL / GRADESCOPE_PASSWORD. "
+            "SSO accounts need a native password (set via 'forgot password')."
+        )}
+    except Exception:
+        return {"error": "Gradescope connection failed. Please try again later."}
+    return _gradescope_connection
+
+
+def _serialize_gradescope(obj: Any) -> Any:
+    """Convert gradescopeapi dataclass values into JSON-safe types"""
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    return obj
+
+
+def gradescope_asdict(obj: Any) -> Dict[str, Any]:
+    """Convert a gradescopeapi dataclass to a JSON-safe dict"""
+    return {
+        key: _serialize_gradescope(value)
+        for key, value in dataclasses.asdict(obj).items()
+    }
 
 
 # ============================================================================
@@ -857,6 +1457,135 @@ def parse_ed_document(content: str) -> str:
     text = text.replace('&nbsp;', ' ')
     text = text.replace('&amp;', '&')
     return text.strip()
+
+
+def escape_ed_xml(text: str) -> str:
+    """Escape text for Ed XML content (Ed itself does not escape single quotes)"""
+    return (
+        text.replace('&', '&amp;')
+        .replace('<', '&lt;')
+        .replace('>', '&gt;')
+        .replace('"', '&quot;')
+    )
+
+
+def _format_ed_inline(text: str) -> str:
+    """Convert inline markdown (code, bold, italic, links, math) to Ed XML"""
+    code_spans: List[str] = []
+
+    def _stash_code(match: "re.Match[str]") -> str:
+        code_spans.append(f"<code>{escape_ed_xml(match.group(1))}</code>")
+        return f"\x00CODE{len(code_spans) - 1}\x00"
+
+    # Code spans are extracted first so escaping and other inline rules
+    # never touch their contents
+    text = re.sub(r'`([^`]+)`', _stash_code, text)
+    text = escape_ed_xml(text)
+    text = re.sub(r'\*\*(.+?)\*\*', r'<bold>\1</bold>', text)
+    text = re.sub(r'(?<!\*)\*(.+?)\*(?!\*)', r'<italic>\1</italic>', text)
+    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<link href="\2">\1</link>', text)
+    text = re.sub(r'\$([^$]+)\$', r'<math>\1</math>', text)
+    for idx, span in enumerate(code_spans):
+        text = text.replace(f"\x00CODE{idx}\x00", span)
+    return text
+
+
+def markdown_to_ed_xml(content: str) -> str:
+    """
+    Convert markdown to Ed's XML document format for thread/comment content.
+
+    Content already starting with '<document' is passed through untouched.
+    Supported: headings, bold/italic/inline code/links/inline math,
+    fenced code blocks (with language -> snippet), bullet/numbered lists,
+    and Ed callouts ('> [!info] ...' with success/info/warning/error).
+    Each non-empty text line becomes its own paragraph (Ed semantics).
+    """
+    if content.lstrip().startswith("<document"):
+        return content
+
+    lines = content.split('\n')
+    blocks: List[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        if line.startswith("```"):
+            lang = line[3:].strip()
+            code_lines: List[str] = []
+            i += 1
+            while i < len(lines) and not lines[i].startswith("```"):
+                code_lines.append(lines[i])
+                i += 1
+            i += 1  # skip closing fence (tolerates unclosed fence at EOF)
+            code = escape_ed_xml('\n'.join(code_lines))
+            if lang:
+                blocks.append(
+                    f'<snippet language="{escape_ed_xml(lang)}" '
+                    f'runnable="false">{code}</snippet>'
+                )
+            else:
+                blocks.append(f'<pre>{code}</pre>')
+            continue
+
+        if not line.strip():
+            i += 1
+            continue
+
+        heading = re.match(r'^(#{1,6})\s+(.+)$', line)
+        if heading:
+            level = len(heading.group(1))
+            blocks.append(
+                f'<heading level="{level}">'
+                f'{_format_ed_inline(heading.group(2))}</heading>'
+            )
+            i += 1
+            continue
+
+        callout = re.match(
+            r'^>\s*\[!(success|info|warning|error)\]\s*(.*)$', line, re.IGNORECASE
+        )
+        if callout:
+            callout_type = callout.group(1).lower()
+            body_parts = [callout.group(2)] if callout.group(2) else []
+            i += 1
+            while i < len(lines) and lines[i].startswith("> "):
+                body_parts.append(lines[i][2:])
+                i += 1
+            body = ' '.join(body_parts)
+            blocks.append(
+                f'<callout type="{callout_type}">'
+                f'<paragraph>{_format_ed_inline(body)}</paragraph></callout>'
+            )
+            continue
+
+        if re.match(r'^[-*]\s+', line):
+            bullet_items: List[str] = []
+            while i < len(lines) and re.match(r'^[-*]\s+', lines[i]):
+                bullet_items.append(re.sub(r'^[-*]\s+', '', lines[i]))
+                i += 1
+            item_xml = ''.join(
+                f'<list-item><paragraph>{_format_ed_inline(item)}</paragraph></list-item>'
+                for item in bullet_items
+            )
+            blocks.append(f'<list style="bullet">{item_xml}</list>')
+            continue
+
+        if re.match(r'^\d+\.\s+', line):
+            numbered_items: List[str] = []
+            while i < len(lines) and re.match(r'^\d+\.\s+', lines[i]):
+                numbered_items.append(re.sub(r'^\d+\.\s+', '', lines[i]))
+                i += 1
+            item_xml = ''.join(
+                f'<list-item><paragraph>{_format_ed_inline(item)}</paragraph></list-item>'
+                for item in numbered_items
+            )
+            blocks.append(f'<list style="number">{item_xml}</list>')
+            continue
+
+        blocks.append(f'<paragraph>{_format_ed_inline(line)}</paragraph>')
+        i += 1
+
+    return f'<document version="2.0">{"".join(blocks)}</document>'
 
 
 def format_courses_markdown(courses: List[Dict]) -> str:
@@ -1118,6 +1847,281 @@ def format_page_detail_markdown(page: Dict) -> str:
     lines.append(f"**Updated**: {updated_at}\n")
     lines.append("---\n")
     lines.append(body if body else "*No content*")
+
+    return "\n".join(lines)
+
+
+def format_todo_markdown(items: List[Dict]) -> str:
+    """Format Canvas to-do list as Markdown"""
+    if not items:
+        return "Nothing on your Canvas to-do list."
+
+    lines = ["# Canvas To-Do List\n"]
+    for item in items:
+        assignment = item.get('assignment') or {}
+        name = assignment.get('name', item.get('type', 'Item'))
+        course = item.get('context_name', '')
+        due = format_datetime(assignment.get('due_at'))
+        points = assignment.get('points_possible')
+
+        lines.append(f"## {name}")
+        if course:
+            lines.append(f"- **Course**: {course}")
+        lines.append(f"- **Due**: {due}")
+        if points is not None:
+            lines.append(f"- **Points**: {points}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def format_upcoming_markdown(events: List[Dict]) -> str:
+    """Format Canvas upcoming events as Markdown"""
+    if not events:
+        return "No upcoming Canvas events."
+
+    lines = ["# Upcoming Canvas Events\n"]
+    for event in events:
+        title = event.get('title', 'Untitled')
+        context = event.get('context_name', '')
+        event_type = event.get('type', 'event')
+        start = format_datetime(event.get('start_at'))
+        context_str = f" ({context})" if context else ""
+        lines.append(f"- **{title}**{context_str} — {start} [{event_type}]")
+
+    return "\n".join(lines)
+
+
+def format_missing_submissions_markdown(assignments: List[Dict]) -> str:
+    """Format missing (past-due, unsubmitted) assignments as Markdown"""
+    if not assignments:
+        return "No missing submissions. All caught up."
+
+    lines = [f"# Missing Submissions ({len(assignments)})\n"]
+    for assignment in assignments:
+        name = assignment.get('name', 'Untitled')
+        course = (assignment.get('course') or {}).get('name', '')
+        due = format_datetime(assignment.get('due_at'))
+        points = assignment.get('points_possible')
+        lines.append(f"## {name}")
+        if course:
+            lines.append(f"- **Course**: {course}")
+        lines.append(f"- **Was due**: {due}")
+        if points is not None:
+            lines.append(f"- **Points**: {points}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def classify_submission(assignment: Dict) -> str:
+    """Classify an assignment's submission state for the current student"""
+    submission = assignment.get('submission') or {}
+    if submission.get('excused'):
+        return "Excused"
+    state = submission.get('workflow_state', 'unsubmitted')
+    if state == 'graded':
+        return "Graded"
+    if state in ('submitted', 'pending_review'):
+        return "Submitted"
+    if submission.get('missing'):
+        return "Missing"
+    due_at = assignment.get('due_at')
+    if due_at:
+        try:
+            due = datetime.fromisoformat(due_at.replace('Z', '+00:00'))
+            if due < datetime.now(due.tzinfo):
+                return "Overdue"
+        except ValueError:
+            pass
+    return "Not submitted yet"
+
+
+def format_submission_status_markdown(assignments: List[Dict], course_name: str = "") -> str:
+    """Format per-assignment submission status as Markdown, grouped by state"""
+    if not assignments:
+        return "No assignments found."
+
+    title = f"# Submission Status - {course_name}" if course_name else "# Submission Status"
+    lines = [title + "\n"]
+
+    groups: Dict[str, List[str]] = {}
+    for assignment in assignments:
+        status = classify_submission(assignment)
+        submission = assignment.get('submission') or {}
+        name = assignment.get('name', 'Untitled')
+        due = format_datetime(assignment.get('due_at'))
+        entry = f"- **{name}** (due {due})"
+        if status == "Graded":
+            score = submission.get('score')
+            points = assignment.get('points_possible')
+            entry += f" — score {score}/{points}"
+        if submission.get('late'):
+            entry += " — late"
+        groups.setdefault(status, []).append(entry)
+
+    status_order = ["Missing", "Overdue", "Not submitted yet", "Submitted", "Graded", "Excused"]
+    for status in status_order:
+        if status in groups:
+            lines.append(f"## {status} ({len(groups[status])})")
+            lines.extend(groups[status])
+            lines.append("")
+
+    return "\n".join(lines)
+
+
+def format_discussions_markdown(topics: List[Dict], course_name: str = "") -> str:
+    """Format Canvas discussion topics as Markdown"""
+    if not topics:
+        return "No discussion topics found."
+
+    header = f"# Discussions - {course_name}" if course_name else "# Discussions"
+    lines = [header + "\n"]
+    for topic in topics:
+        title = topic.get('title', 'Untitled')
+        replies = topic.get('discussion_subentry_count', 0)
+        unread = topic.get('unread_count', 0)
+        posted = format_datetime(topic.get('posted_at'))
+        flags = []
+        if topic.get('pinned'):
+            flags.append("pinned")
+        if topic.get('locked'):
+            flags.append("locked")
+        flag_str = f" [{', '.join(flags)}]" if flags else ""
+        unread_str = f", {unread} unread" if unread else ""
+        lines.append(
+            f"- **{title}** (ID: {topic.get('id')}){flag_str} — "
+            f"{replies} replies{unread_str} — {posted}"
+        )
+
+    return "\n".join(lines)
+
+
+def format_all_grades_markdown(courses: List[Dict]) -> str:
+    """Format grades for all courses (from include[]=total_scores) as Markdown"""
+    lines = ["# All Course Grades\n"]
+    found = False
+    for course in courses:
+        enrollments = course.get('enrollments') or []
+        if not enrollments:
+            continue
+        enrollment = enrollments[0]
+        current_score = enrollment.get('computed_current_score')
+        current_grade = enrollment.get('computed_current_grade')
+        final_score = enrollment.get('computed_final_score')
+        if current_score is None and final_score is None:
+            continue
+        found = True
+        name = course.get('name', 'Unknown Course')
+        parts = []
+        if current_score is not None:
+            grade_prefix = f"{current_grade} " if current_grade else ""
+            parts.append(f"current {grade_prefix}{current_score}%")
+        if final_score is not None:
+            parts.append(f"final {final_score}%")
+        lines.append(f"- **{name}**: {', '.join(parts)}")
+
+    if not found:
+        return "No grade data available for these courses."
+
+    return "\n".join(lines)
+
+
+def format_my_submission_markdown(submission: Dict) -> str:
+    """Format your own submission with feedback as Markdown"""
+    assignment = submission.get('assignment') or {}
+    assignment_name = assignment.get('name', 'Assignment')
+
+    lines = [f"# My Submission - {assignment_name}\n"]
+    lines.append(f"- **State**: {submission.get('workflow_state', 'unknown')}")
+    lines.append(f"- **Submitted at**: {format_datetime(submission.get('submitted_at'))}")
+
+    score = submission.get('score')
+    points = assignment.get('points_possible')
+    if score is not None:
+        lines.append(f"- **Score**: {score}/{points}")
+    if submission.get('grade'):
+        lines.append(f"- **Grade**: {submission['grade']}")
+    if submission.get('late'):
+        lines.append("- **Late**: yes")
+    if submission.get('missing'):
+        lines.append("- **Missing**: yes")
+    if submission.get('excused'):
+        lines.append("- **Excused**: yes")
+    if submission.get('attempt'):
+        lines.append(f"- **Attempt**: {submission['attempt']}")
+
+    comments = submission.get('submission_comments') or []
+    if comments:
+        lines.append("\n## Feedback Comments")
+        for comment in comments:
+            author = comment.get('author_name', 'Unknown')
+            created = format_datetime(comment.get('created_at'))
+            text = strip_html(comment.get('comment', ''))
+            lines.append(f"- **{author}** ({created}): {text}")
+
+    rubric = submission.get('rubric_assessment') or {}
+    if rubric:
+        criteria_names = {
+            c.get('id'): c.get('description', c.get('id'))
+            for c in (assignment.get('rubric') or [])
+        }
+        lines.append("\n## Rubric Assessment")
+        for criterion_id, assessment in rubric.items():
+            name = criteria_names.get(criterion_id, criterion_id)
+            rubric_points = assessment.get('points')
+            rubric_comment = assessment.get('comments', '')
+            entry = f"- **{name}**: {rubric_points}"
+            if rubric_comment:
+                entry += f" — {rubric_comment}"
+            lines.append(entry)
+
+    return "\n".join(lines)
+
+
+def _format_discussion_entries(
+    entries: List[Dict], participants: Dict[Any, str], depth: int = 0
+) -> List[str]:
+    """Recursively format discussion entries with indentation"""
+    lines: List[str] = []
+    indent = "  " * depth
+    for entry in entries:
+        if entry.get('deleted'):
+            continue
+        author = participants.get(entry.get('user_id'), 'Unknown')
+        message = strip_html(entry.get('message', ''))
+        created = format_datetime(entry.get('created_at'))
+        lines.append(f"{indent}- **{author}** ({created}): {message}")
+        replies = entry.get('replies') or []
+        if replies:
+            lines.extend(_format_discussion_entries(replies, participants, depth + 1))
+    return lines
+
+
+def format_discussion_detail_markdown(topic: Dict, view: Dict) -> str:
+    """Format a Canvas discussion topic with threaded entries as Markdown"""
+    title = topic.get('title', 'Untitled')
+    author = (topic.get('author') or {}).get('display_name', 'Unknown')
+    posted = format_datetime(topic.get('posted_at'))
+    message = strip_html(topic.get('message', ''))
+
+    lines = [f"# {title}\n"]
+    lines.append(f"**Author**: {author} | **Posted**: {posted}\n")
+    lines.append("---\n")
+    lines.append(message if message else "*No content*")
+    lines.append("")
+
+    participants = {
+        p.get('id'): p.get('display_name', 'Unknown')
+        for p in view.get('participants', [])
+    }
+    entries = view.get('view', [])
+    entry_lines = _format_discussion_entries(entries, participants)
+    if entry_lines:
+        lines.append("## Replies\n")
+        lines.extend(entry_lines)
+    else:
+        lines.append("*No replies yet*")
 
     return "\n".join(lines)
 
@@ -2239,6 +3243,561 @@ async def canvas_get_syllabus(params: GetSyllabusInput) -> str:
 
 
 # ============================================================================
+# MCP Tools - Canvas Student Dashboard
+# ============================================================================
+
+@mcp.tool(
+    name="canvas_get_todo",
+    annotations={  # type: ignore[arg-type]
+        "title": "Get Canvas To-Do List",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def canvas_get_todo(params: GetTodoInput) -> str:
+    """
+    Get the current user's Canvas to-do list across all courses.
+
+    Returns assignments that need to be submitted, sorted by Canvas relevance.
+    This is the same list shown in the Canvas dashboard sidebar.
+
+    Args:
+        params (GetTodoInput): Input parameters
+
+    Returns:
+        str: To-do items with course, due date, and points
+    """
+    result = await canvas_api_request_paginated(
+        "/users/self/todo", params={"per_page": params.limit}
+    )
+
+    if result and isinstance(result[0], dict) and "error" in result[0]:
+        return f"Error: {result[0]['error']}"
+
+    items = result[:params.limit]
+
+    if params.response_format == ResponseFormat.JSON:
+        return json.dumps(items, indent=2, ensure_ascii=False)
+
+    return format_todo_markdown(items)
+
+
+@mcp.tool(
+    name="canvas_get_upcoming",
+    annotations={  # type: ignore[arg-type]
+        "title": "Get Canvas Upcoming Events",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def canvas_get_upcoming(params: GetUpcomingInput) -> str:
+    """
+    Get the current user's upcoming Canvas events and assignment deadlines.
+
+    Covers the near future across all enrolled courses (same as the
+    "Coming Up" section in the Canvas dashboard).
+
+    Args:
+        params (GetUpcomingInput): Input parameters
+
+    Returns:
+        str: Upcoming events with dates
+    """
+    result = await canvas_api_request("/users/self/upcoming_events")
+
+    if isinstance(result, dict) and "error" in result:
+        return f"Error: {result['error']}"
+
+    events = result if isinstance(result, list) else []
+
+    if params.response_format == ResponseFormat.JSON:
+        return json.dumps(events, indent=2, ensure_ascii=False)
+
+    return format_upcoming_markdown(events)
+
+
+@mcp.tool(
+    name="canvas_get_missing_submissions",
+    annotations={  # type: ignore[arg-type]
+        "title": "Get Canvas Missing Submissions",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def canvas_get_missing_submissions(params: GetMissingSubmissionsInput) -> str:
+    """
+    Get assignments that are past due and still unsubmitted.
+
+    Args:
+        params (GetMissingSubmissionsInput): Input parameters
+            - course_ids: Optional list of Canvas course IDs to filter
+
+    Returns:
+        str: Missing assignments with course and original due date
+    """
+    api_params: Dict[str, Any] = {
+        "include[]": ["course"],
+        "per_page": params.limit
+    }
+    if params.course_ids:
+        api_params["course_ids[]"] = params.course_ids
+
+    result = await canvas_api_request_paginated(
+        "/users/self/missing_submissions", params=api_params
+    )
+
+    if result and isinstance(result[0], dict) and "error" in result[0]:
+        return f"Error: {result[0]['error']}"
+
+    assignments = result[:params.limit]
+
+    if params.response_format == ResponseFormat.JSON:
+        return json.dumps(assignments, indent=2, ensure_ascii=False)
+
+    return format_missing_submissions_markdown(assignments)
+
+
+@mcp.tool(
+    name="canvas_get_submission_status",
+    annotations={  # type: ignore[arg-type]
+        "title": "Get Canvas Submission Status",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def canvas_get_submission_status(params: GetSubmissionStatusInput) -> str:
+    """
+    Get per-assignment submission status for a Canvas course.
+
+    Groups assignments by state: Missing / Overdue / Not submitted yet /
+    Submitted / Graded / Excused. Shows scores for graded work and flags
+    late submissions.
+
+    Args:
+        params (GetSubmissionStatusInput): Input parameters
+
+    Returns:
+        str: Assignments grouped by submission state
+    """
+    result = await canvas_api_request_paginated(
+        f"/courses/{params.course_id}/assignments",
+        params={"include[]": ["submission"], "order_by": "due_at"}
+    )
+
+    if result and isinstance(result[0], dict) and "error" in result[0]:
+        return f"Error: {result[0]['error']}"
+
+    if params.response_format == ResponseFormat.JSON:
+        status_data = [
+            {
+                "id": a.get("id"),
+                "name": a.get("name"),
+                "due_at": a.get("due_at"),
+                "points_possible": a.get("points_possible"),
+                "status": classify_submission(a),
+                "submission": a.get("submission")
+            }
+            for a in result
+        ]
+        return json.dumps(status_data, indent=2, ensure_ascii=False)
+
+    course_name = await get_course_name(params.course_id)
+    return format_submission_status_markdown(result, course_name)
+
+
+@mcp.tool(
+    name="canvas_list_discussions",
+    annotations={  # type: ignore[arg-type]
+        "title": "Get Canvas Discussion Topics",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def canvas_list_discussions(params: ListDiscussionsInput) -> str:
+    """
+    Get discussion topics for a Canvas course.
+
+    Sorted by recent activity. Shows reply counts, unread counts,
+    and pinned/locked status. Use canvas_get_discussion to read a topic.
+
+    Args:
+        params (ListDiscussionsInput): Input parameters
+
+    Returns:
+        str: Discussion topic list
+    """
+    result = await canvas_api_request_paginated(
+        f"/courses/{params.course_id}/discussion_topics",
+        params={"order_by": "recent_activity", "per_page": params.limit}
+    )
+
+    if result and isinstance(result[0], dict) and "error" in result[0]:
+        return f"Error: {result[0]['error']}"
+
+    topics = result[:params.limit]
+
+    if params.response_format == ResponseFormat.JSON:
+        return json.dumps(topics, indent=2, ensure_ascii=False)
+
+    course_name = await get_course_name(params.course_id)
+    return format_discussions_markdown(topics, course_name)
+
+
+@mcp.tool(
+    name="canvas_get_discussion",
+    annotations={  # type: ignore[arg-type]
+        "title": "Get Canvas Discussion Topic",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def canvas_get_discussion(params: GetDiscussionInput) -> str:
+    """
+    Get a Canvas discussion topic with its full threaded replies.
+
+    Args:
+        params (GetDiscussionInput): Input parameters
+            - course_id: Canvas course ID
+            - topic_id: Discussion topic ID (from canvas_list_discussions)
+
+    Returns:
+        str: Topic content and threaded replies with authors
+    """
+    topic = await canvas_api_request(
+        f"/courses/{params.course_id}/discussion_topics/{params.topic_id}"
+    )
+
+    if isinstance(topic, dict) and "error" in topic:
+        return f"Error: {topic['error']}"
+
+    view = await canvas_api_request(
+        f"/courses/{params.course_id}/discussion_topics/{params.topic_id}/view"
+    )
+
+    if isinstance(view, dict) and "error" in view:
+        return f"Error: {view['error']}"
+
+    if params.response_format == ResponseFormat.JSON:
+        return json.dumps({"topic": topic, "view": view}, indent=2, ensure_ascii=False)
+
+    return format_discussion_detail_markdown(topic, view)
+
+
+@mcp.tool(
+    name="canvas_get_all_grades",
+    annotations={  # type: ignore[arg-type]
+        "title": "Get All Canvas Course Grades",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def canvas_get_all_grades(params: GetAllGradesInput) -> str:
+    """
+    Get current grades for ALL your Canvas courses in one call.
+
+    Uses include[]=total_scores so no per-course requests are needed.
+    For a detailed per-assignment breakdown in one course, use
+    canvas_get_grades instead.
+
+    Args:
+        params (GetAllGradesInput): Input parameters
+
+    Returns:
+        str: Course list with current/final scores and letter grades
+    """
+    api_params: Dict[str, Any] = {
+        "include[]": ["total_scores", "current_grading_period_scores"],
+        "per_page": 100
+    }
+    if params.enrollment_state != EnrollmentState.ALL:
+        api_params["enrollment_state"] = params.enrollment_state.value
+
+    result = await canvas_api_request_paginated("/courses", params=api_params)
+
+    if result and isinstance(result[0], dict) and "error" in result[0]:
+        return f"Error: {result[0]['error']}"
+
+    if params.response_format == ResponseFormat.JSON:
+        grades = [
+            {
+                "id": c.get("id"),
+                "name": c.get("name"),
+                "enrollments": c.get("enrollments")
+            }
+            for c in result
+        ]
+        return json.dumps(grades, indent=2, ensure_ascii=False)
+
+    return format_all_grades_markdown(result)
+
+
+@mcp.tool(
+    name="canvas_get_my_submission",
+    annotations={  # type: ignore[arg-type]
+        "title": "Get My Canvas Submission & Feedback",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def canvas_get_my_submission(params: GetMySubmissionInput) -> str:
+    """
+    Get your own submission for an assignment, including marker feedback:
+    score, grade, submission comments, and rubric assessment.
+
+    Args:
+        params (GetMySubmissionInput): Input parameters
+
+    Returns:
+        str: Submission state, score, feedback comments, and rubric marks
+    """
+    result = await canvas_api_request(
+        f"/courses/{params.course_id}/assignments/"
+        f"{params.assignment_id}/submissions/self",
+        params={
+            "include[]": ["submission_comments", "rubric_assessment", "assignment"]
+        }
+    )
+
+    if isinstance(result, dict) and "error" in result:
+        return f"Error: {result['error']}"
+
+    if params.response_format == ResponseFormat.JSON:
+        return json.dumps(result, indent=2, ensure_ascii=False)
+
+    return format_my_submission_markdown(result)
+
+
+@mcp.tool(
+    name="canvas_get_peer_reviews",
+    annotations={  # type: ignore[arg-type]
+        "title": "Get My Canvas Peer Reviews",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def canvas_get_peer_reviews(params: GetPeerReviewsInput) -> str:
+    """
+    Get peer reviews assigned TO YOU in a Canvas course.
+
+    Scans assignments with peer reviews enabled and lists your review
+    assignments with completion status.
+
+    Args:
+        params (GetPeerReviewsInput): Input parameters
+
+    Returns:
+        str: Your peer review assignments grouped by assignment
+    """
+    me = await canvas_api_request("/users/self")
+    if isinstance(me, dict) and "error" in me:
+        return f"Error: {me['error']}"
+    my_id = me.get("id")
+
+    assignments = await canvas_api_request_paginated(
+        f"/courses/{params.course_id}/assignments", params={"per_page": 100}
+    )
+    if assignments and isinstance(assignments[0], dict) and "error" in assignments[0]:
+        return f"Error: {assignments[0]['error']}"
+
+    peer_assignments = [a for a in assignments if a.get("peer_reviews")]
+    if not peer_assignments:
+        return "No assignments with peer reviews in this course."
+
+    my_reviews: List[Dict[str, Any]] = []
+    for assignment in peer_assignments:
+        reviews = await canvas_api_request_paginated(
+            f"/courses/{params.course_id}/assignments/"
+            f"{assignment['id']}/peer_reviews",
+            params={"include[]": ["user"], "per_page": 100}
+        )
+        if reviews and isinstance(reviews[0], dict) and "error" in reviews[0]:
+            continue
+        for review in reviews:
+            if review.get("assessor_id") == my_id:
+                my_reviews.append({
+                    "assignment_name": assignment.get("name"),
+                    "assignment_id": assignment.get("id"),
+                    "workflow_state": review.get("workflow_state"),
+                    "reviewee": (review.get("user") or {}).get(
+                        "display_name", f"user {review.get('user_id')}"
+                    ),
+                })
+
+    if params.response_format == ResponseFormat.JSON:
+        return json.dumps(my_reviews, indent=2, ensure_ascii=False)
+
+    if not my_reviews:
+        return "No peer reviews assigned to you in this course."
+
+    lines = ["# My Peer Reviews\n"]
+    for review in my_reviews:
+        status = "done" if review["workflow_state"] == "completed" else "PENDING"
+        lines.append(
+            f"- **{review['assignment_name']}** — review {review['reviewee']} "
+            f"[{status}]"
+        )
+
+    return "\n".join(lines)
+
+
+# ============================================================================
+# MCP Tools - Canvas Write Operations
+# ============================================================================
+
+@mcp.tool(
+    name="canvas_submit_assignment",
+    annotations={  # type: ignore[arg-type]
+        "title": "Submit Canvas Assignment",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": True
+    }
+)
+async def canvas_submit_assignment(params: SubmitAssignmentInput) -> str:
+    """
+    Submit a Canvas assignment on behalf of the current user.
+
+    Supports three submission types:
+    - online_text_entry: submits 'body' as the text content
+    - online_url: submits 'url'
+    - online_upload: uploads local 'file_paths' then attaches them
+
+    This performs a REAL submission that markers can see. Verify the
+    assignment ID and content carefully before calling.
+
+    Args:
+        params (SubmitAssignmentInput): Input parameters
+
+    Returns:
+        str: Submission confirmation with timestamp and attempt number
+    """
+    submission_data: Dict[str, Any] = {
+        "submission_type": params.submission_type.value
+    }
+    uploaded_names: List[str] = []
+
+    if params.submission_type == SubmissionType.TEXT:
+        if not params.body:
+            return "Error: 'body' is required for online_text_entry submissions."
+        submission_data["body"] = params.body
+    elif params.submission_type == SubmissionType.URL:
+        if not params.url:
+            return "Error: 'url' is required for online_url submissions."
+        submission_data["url"] = params.url
+    else:
+        if not params.file_paths:
+            return "Error: 'file_paths' is required for online_upload submissions."
+        file_ids: List[Any] = []
+        for path in params.file_paths:
+            file_info = await canvas_upload_file(
+                f"/courses/{params.course_id}/assignments/"
+                f"{params.assignment_id}/submissions/self/files",
+                path
+            )
+            if "error" in file_info:
+                return f"Error uploading {path}: {file_info['error']}"
+            if "id" not in file_info:
+                return f"Error uploading {path}: Canvas did not return a file ID."
+            file_ids.append(file_info["id"])
+            uploaded_names.append(
+                file_info.get("display_name", os.path.basename(path))
+            )
+        submission_data["file_ids"] = file_ids
+
+    payload: Dict[str, Any] = {"submission": submission_data}
+    if params.comment:
+        payload["comment"] = {"text_comment": params.comment}
+
+    result = await canvas_api_request(
+        f"/courses/{params.course_id}/assignments/{params.assignment_id}/submissions",
+        method="POST", data=payload
+    )
+
+    if isinstance(result, dict) and "error" in result:
+        return f"Error: {result['error']}"
+
+    lines = ["# Submission Successful\n"]
+    lines.append(f"- **Type**: {params.submission_type.value}")
+    lines.append(f"- **Submitted at**: {format_datetime(result.get('submitted_at'))}")
+    if result.get('attempt'):
+        lines.append(f"- **Attempt**: {result['attempt']}")
+    if uploaded_names:
+        lines.append(f"- **Files**: {', '.join(uploaded_names)}")
+    if result.get('late'):
+        lines.append("- **Note**: Canvas marked this submission as LATE")
+
+    return "\n".join(lines)
+
+
+@mcp.tool(
+    name="canvas_post_discussion_entry",
+    annotations={  # type: ignore[arg-type]
+        "title": "Post to Canvas Discussion",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": True
+    }
+)
+async def canvas_post_discussion_entry(params: PostDiscussionEntryInput) -> str:
+    """
+    Post a new entry (or a reply to an existing entry) in a Canvas discussion.
+
+    This posts publicly to the course discussion as the current user.
+
+    Args:
+        params (PostDiscussionEntryInput): Input parameters
+            - reply_to_entry_id: If provided, replies to that entry instead
+              of creating a top-level entry
+
+    Returns:
+        str: Confirmation with the new entry ID
+    """
+    if params.reply_to_entry_id:
+        endpoint = (
+            f"/courses/{params.course_id}/discussion_topics/"
+            f"{params.topic_id}/entries/{params.reply_to_entry_id}/replies"
+        )
+    else:
+        endpoint = (
+            f"/courses/{params.course_id}/discussion_topics/"
+            f"{params.topic_id}/entries"
+        )
+
+    result = await canvas_api_request(
+        endpoint, method="POST", data={"message": params.message}
+    )
+
+    if isinstance(result, dict) and "error" in result:
+        return f"Error: {result['error']}"
+
+    lines = ["# Posted Successfully\n"]
+    lines.append(f"- **Entry ID**: {result.get('id')}")
+    lines.append(f"- **Posted at**: {format_datetime(result.get('created_at'))}")
+
+    return "\n".join(lines)
+
+
+# ============================================================================
 # MCP Tools - Ed Discussion
 # ============================================================================
 
@@ -2469,6 +4028,303 @@ async def ed_search_threads(params: EdSearchThreadsInput) -> str:
 
 
 # ============================================================================
+# MCP Tools - Ed Write Operations
+# ============================================================================
+
+@mcp.tool(
+    name="ed_post_thread",
+    annotations={  # type: ignore[arg-type]
+        "title": "Post Ed Discussion Thread",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": True
+    }
+)
+async def ed_post_thread(params: EdPostThreadInput) -> str:
+    """
+    Post a new thread to an Ed Discussion course forum.
+
+    Content is written in markdown and converted to Ed's XML format
+    automatically (headings, bold/italic, code spans, fenced code blocks,
+    lists, links, math, and '> [!info]' style callouts are supported).
+
+    This posts a REAL thread visible to the course (unless is_private).
+    The post is immediately live — there is no draft stage.
+
+    Args:
+        params (EdPostThreadInput): Input parameters
+
+    Returns:
+        str: Confirmation with the new thread's number and URL
+    """
+    payload = {
+        "thread": {
+            "type": params.thread_type.value,
+            "title": params.title,
+            "category": params.category,
+            "subcategory": params.subcategory,
+            "content": markdown_to_ed_xml(params.content),
+            "is_private": params.is_private,
+            "is_anonymous": params.is_anonymous,
+            "is_pinned": False,
+            "is_megathread": False,
+            "anonymous_comments": False,
+        }
+    }
+
+    result = await ed_api_request(
+        f"/courses/{params.course_id}/threads", method="POST", data=payload
+    )
+
+    if isinstance(result, dict) and "error" in result:
+        return f"Error: {result['error']}"
+
+    thread = result.get('thread', {}) if isinstance(result, dict) else {}
+
+    lines = ["# Thread Posted\n"]
+    lines.append(f"- **Title**: {thread.get('title', params.title)}")
+    lines.append(f"- **Thread ID**: {thread.get('id')}")
+    lines.append(f"- **Number**: #{thread.get('number')}")
+    lines.append(f"- **Type**: {thread.get('type', params.thread_type.value)}")
+    if thread.get('is_private'):
+        lines.append("- **Visibility**: private (staff + you only)")
+    lines.append(
+        f"- **URL**: https://edstem.org/au/courses/{params.course_id}"
+        f"/discussion/{thread.get('id')}"
+    )
+
+    return "\n".join(lines)
+
+
+@mcp.tool(
+    name="ed_edit_thread",
+    annotations={  # type: ignore[arg-type]
+        "title": "Edit Ed Discussion Thread",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def ed_edit_thread(params: EdEditThreadInput) -> str:
+    """
+    Edit an existing Ed Discussion thread (typically your own).
+
+    Only provided fields change; everything else is preserved
+    (read-modify-write against the live thread).
+
+    Args:
+        params (EdEditThreadInput): Input parameters
+
+    Returns:
+        str: Confirmation of the edit
+    """
+    current = await ed_api_request(f"/threads/{params.thread_id}")
+
+    if isinstance(current, dict) and "error" in current:
+        return f"Error: {current['error']}"
+
+    thread = current.get('thread') if isinstance(current, dict) else None
+    if not isinstance(thread, dict):
+        return "Error: Could not load the current thread."
+
+    changes: Dict[str, Any] = {}
+    if params.title is not None:
+        changes["title"] = params.title
+    if params.content is not None:
+        changes["content"] = markdown_to_ed_xml(params.content)
+    if params.category is not None:
+        changes["category"] = params.category
+    if params.subcategory is not None:
+        changes["subcategory"] = params.subcategory
+
+    if not changes:
+        return "Error: Nothing to change — provide at least one field."
+
+    merged = {**thread, **changes}
+    result = await ed_api_request(
+        f"/threads/{params.thread_id}", method="PUT", data={"thread": merged}
+    )
+
+    if isinstance(result, dict) and "error" in result:
+        return f"Error: {result['error']}"
+
+    updated = result.get('thread', {}) if isinstance(result, dict) else {}
+    lines = ["# Thread Updated\n"]
+    lines.append(f"- **Thread ID**: {params.thread_id}")
+    lines.append(f"- **Title**: {updated.get('title', merged.get('title'))}")
+    lines.append(f"- **Changed fields**: {', '.join(changes.keys())}")
+
+    return "\n".join(lines)
+
+
+@mcp.tool(
+    name="ed_post_comment",
+    annotations={  # type: ignore[arg-type]
+        "title": "Post Ed Comment or Answer",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": True
+    }
+)
+async def ed_post_comment(params: EdPostCommentInput) -> str:
+    """
+    Post a comment or an answer on an Ed Discussion thread.
+
+    Use comment_type='answer' to answer a question thread (shows in the
+    Answers section); 'comment' for general discussion. Content is
+    markdown, converted to Ed XML automatically. Posts are immediately
+    live and visible to the course (unless is_private).
+
+    Args:
+        params (EdPostCommentInput): Input parameters
+
+    Returns:
+        str: Confirmation with the new comment ID
+    """
+    payload = {
+        "comment": {
+            "type": params.comment_type.value,
+            "content": markdown_to_ed_xml(params.content),
+            "is_private": params.is_private,
+            "is_anonymous": params.is_anonymous,
+        }
+    }
+
+    result = await ed_api_request(
+        f"/threads/{params.thread_id}/comments", method="POST", data=payload
+    )
+
+    if isinstance(result, dict) and "error" in result:
+        return f"Error: {result['error']}"
+
+    comment = result.get('comment', {}) if isinstance(result, dict) else {}
+    lines = ["# Comment Posted\n"]
+    lines.append(f"- **Comment ID**: {comment.get('id')}")
+    lines.append(f"- **Type**: {comment.get('type', params.comment_type.value)}")
+    lines.append(f"- **Thread**: {params.thread_id}")
+
+    return "\n".join(lines)
+
+
+@mcp.tool(
+    name="ed_reply_to_comment",
+    annotations={  # type: ignore[arg-type]
+        "title": "Reply to Ed Comment",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": True
+    }
+)
+async def ed_reply_to_comment(params: EdReplyToCommentInput) -> str:
+    """
+    Reply to an existing comment on an Ed Discussion thread.
+
+    Content is markdown, converted to Ed XML automatically.
+    The reply is immediately live.
+
+    Args:
+        params (EdReplyToCommentInput): Input parameters
+
+    Returns:
+        str: Confirmation with the new reply ID
+    """
+    payload = {
+        "comment": {
+            "type": "comment",
+            "content": markdown_to_ed_xml(params.content),
+            "is_private": params.is_private,
+            "is_anonymous": params.is_anonymous,
+        }
+    }
+
+    result = await ed_api_request(
+        f"/comments/{params.comment_id}/comments", method="POST", data=payload
+    )
+
+    if isinstance(result, dict) and "error" in result:
+        return f"Error: {result['error']}"
+
+    comment = result.get('comment', {}) if isinstance(result, dict) else {}
+    lines = ["# Reply Posted\n"]
+    lines.append(f"- **Reply ID**: {comment.get('id')}")
+    lines.append(f"- **In reply to comment**: {params.comment_id}")
+
+    return "\n".join(lines)
+
+
+@mcp.tool(
+    name="ed_accept_answer",
+    annotations={  # type: ignore[arg-type]
+        "title": "Accept Ed Answer",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def ed_accept_answer(params: EdAcceptAnswerInput) -> str:
+    """
+    Accept an answer on your Ed question thread, marking it resolved.
+
+    Args:
+        params (EdAcceptAnswerInput): Input parameters
+            - thread_id: Your question thread
+            - comment_id: The answer to accept (from ed_get_thread JSON output)
+
+    Returns:
+        str: Confirmation
+    """
+    result = await ed_api_request(
+        f"/threads/{params.thread_id}/accept/{params.comment_id}", method="POST"
+    )
+
+    if isinstance(result, dict) and "error" in result:
+        return f"Error: {result['error']}"
+
+    return (
+        f"Answer {params.comment_id} accepted on thread {params.thread_id}. "
+        "The thread is now marked as resolved."
+    )
+
+
+@mcp.tool(
+    name="ed_thread_action",
+    annotations={  # type: ignore[arg-type]
+        "title": "Toggle Ed Thread State",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def ed_thread_action(params: EdThreadActionInput) -> str:
+    """
+    Toggle a state on an Ed thread: star/unstar (student bookmark),
+    pin/unpin, lock/unlock, endorse/unendorse (these six require staff role).
+
+    Starring is private to your account and freely reversible.
+
+    Args:
+        params (EdThreadActionInput): Input parameters
+
+    Returns:
+        str: Confirmation
+    """
+    result = await ed_api_request(
+        f"/threads/{params.thread_id}/{params.action.value}", method="POST"
+    )
+
+    if isinstance(result, dict) and "error" in result:
+        return f"Error: {result['error']}"
+
+    return f"Thread {params.thread_id}: '{params.action.value}' applied."
+
+
+# ============================================================================
 # MCP Tools - Ed Lessons
 # ============================================================================
 
@@ -2543,6 +4399,136 @@ async def ed_get_lesson(params: EdGetLessonInput) -> str:
         return json.dumps(lesson, indent=2, ensure_ascii=False)
 
     return format_ed_lesson_detail_markdown(lesson, params.include_slide_content)
+
+
+# ============================================================================
+# MCP Tools - Gradescope
+# ============================================================================
+
+@mcp.tool(
+    name="gradescope_list_courses",
+    annotations={  # type: ignore[arg-type]
+        "title": "Get Gradescope Courses",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def gradescope_list_courses(params: GradescopeListCoursesInput) -> str:
+    """
+    Get all Gradescope courses for the configured account.
+
+    Requires GRADESCOPE_EMAIL / GRADESCOPE_PASSWORD environment variables
+    (Gradescope has no official API; this uses a maintained scraping library).
+
+    Args:
+        params (GradescopeListCoursesInput): Input parameters
+
+    Returns:
+        str: Courses grouped by role (student / instructor) with IDs
+    """
+    connection = await get_gradescope_connection()
+    if isinstance(connection, dict):
+        return f"Error: {connection['error']}"
+
+    try:
+        courses = await asyncio.to_thread(connection.account.get_courses)
+    except Exception:
+        return "Error: Failed to fetch Gradescope courses."
+
+    if params.response_format == ResponseFormat.JSON:
+        serializable = {
+            role: {cid: gradescope_asdict(course) for cid, course in role_courses.items()}
+            for role, role_courses in courses.items()
+        }
+        return json.dumps(serializable, indent=2, ensure_ascii=False)
+
+    lines = ["# Gradescope Courses\n"]
+    for role in ("student", "instructor"):
+        role_courses = courses.get(role) or {}
+        if not role_courses:
+            continue
+        lines.append(f"## As {role}")
+        for course_id, course in role_courses.items():
+            term = f"{course.semester} {course.year}".strip()
+            name = course.full_name or course.name
+            count = course.num_assignments
+            count_str = f" — {count} assignments" if count else ""
+            lines.append(f"- **{name}** (ID: {course_id}) — {term}{count_str}")
+        lines.append("")
+
+    if len(lines) == 1:
+        return "No Gradescope courses found for this account."
+
+    return "\n".join(lines)
+
+
+@mcp.tool(
+    name="gradescope_list_assignments",
+    annotations={  # type: ignore[arg-type]
+        "title": "Get Gradescope Assignments",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def gradescope_list_assignments(params: GradescopeListAssignmentsInput) -> str:
+    """
+    Get all assignments in a Gradescope course with due dates,
+    submission status, and grades.
+
+    Args:
+        params (GradescopeListAssignmentsInput): Input parameters
+            - course_id: Gradescope course ID (from gradescope_list_courses)
+
+    Returns:
+        str: Assignments with release/due dates, status, and grade
+    """
+    connection = await get_gradescope_connection()
+    if isinstance(connection, dict):
+        return f"Error: {connection['error']}"
+
+    try:
+        assignments = await asyncio.to_thread(
+            connection.account.get_assignments, params.course_id
+        )
+    except Exception:
+        return (
+            "Error: Failed to fetch Gradescope assignments. "
+            "Check the course ID (from gradescope_list_courses)."
+        )
+
+    if params.response_format == ResponseFormat.JSON:
+        return json.dumps(
+            [gradescope_asdict(a) for a in assignments],
+            indent=2, ensure_ascii=False
+        )
+
+    if not assignments:
+        return "No assignments found in this Gradescope course."
+
+    lines = [f"# Gradescope Assignments ({len(assignments)})\n"]
+    for assignment in assignments:
+        due = (
+            assignment.due_date.strftime("%Y-%m-%d %H:%M")
+            if assignment.due_date else "No due date"
+        )
+        status = assignment.submissions_status or "Unknown"
+        grade_str = ""
+        if assignment.grade is not None and assignment.max_grade is not None:
+            grade_str = f" — {assignment.grade}/{assignment.max_grade}"
+        lines.append(f"## {assignment.name}")
+        lines.append(f"- **Due**: {due}")
+        if assignment.late_due_date:
+            lines.append(
+                f"- **Late due**: {assignment.late_due_date.strftime('%Y-%m-%d %H:%M')}"
+            )
+        lines.append(f"- **Status**: {status}{grade_str}")
+        lines.append("")
+
+    return "\n".join(lines)
 
 
 # ============================================================================
@@ -2644,7 +4630,7 @@ async def verify_assessment_coverage(params: VerifyAssessmentCoverageInput) -> s
         }, indent=2, ensure_ascii=False)
 
     # Format as Markdown
-    title = f"# Assessment Coverage Verification"
+    title = "# Assessment Coverage Verification"
     if course_name:
         title += f" - {course_name}"
     title += "\n"
@@ -2667,12 +4653,12 @@ async def verify_assessment_coverage(params: VerifyAssessmentCoverageInput) -> s
 
     # Comparison result
     if canvas_count == outline_count:
-        lines.append(f"**Status**: MATCH\n")
+        lines.append("**Status**: MATCH\n")
     else:
-        lines.append(f"**Status**: MISMATCH\n")
+        lines.append("**Status**: MISMATCH\n")
 
-    lines.append(f"| Source | Count |")
-    lines.append(f"|--------|-------|")
+    lines.append("| Source | Count |")
+    lines.append("|--------|-------|")
     lines.append(f"| Unit Outline Assessments | {outline_count} |")
     lines.append(f"| Canvas Assignments | {canvas_count} |")
     lines.append("")
