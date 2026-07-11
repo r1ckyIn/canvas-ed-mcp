@@ -1999,30 +1999,49 @@ def format_discussions_markdown(topics: List[Dict], course_name: str = "") -> st
 
 def format_all_grades_markdown(courses: List[Dict]) -> str:
     """Format grades for all courses (from include[]=total_scores) as Markdown"""
-    lines = ["# All Course Grades\n"]
-    found = False
+    graded: List[str] = []
+    hidden: List[str] = []
     for course in courses:
-        enrollments = course.get('enrollments') or []
-        if not enrollments:
-            continue
-        enrollment = enrollments[0]
-        current_score = enrollment.get('computed_current_score')
-        current_grade = enrollment.get('computed_current_grade')
-        final_score = enrollment.get('computed_final_score')
-        if current_score is None and final_score is None:
-            continue
-        found = True
         name = course.get('name', 'Unknown Course')
+        enrollments = course.get('enrollments') or []
+        student = next(
+            (e for e in enrollments if e.get('type') == 'student'),
+            enrollments[0] if enrollments else {}
+        )
+        current_score = student.get('computed_current_score')
+        current_grade = student.get('computed_current_grade')
+        final_score = student.get('computed_final_score')
+
+        if course.get('hide_final_grades'):
+            hidden.append(name)
+            continue
+        # No graded items at all (portal/hub courses): skip as noise
+        if current_score is None and not final_score:
+            continue
+
         parts = []
         if current_score is not None:
             grade_prefix = f"{current_grade} " if current_grade else ""
             parts.append(f"current {grade_prefix}{current_score}%")
         if final_score is not None:
-            parts.append(f"final {final_score}%")
-        lines.append(f"- **{name}**: {', '.join(parts)}")
+            parts.append(f"final {final_score}% (ungraded counted as 0)")
+        graded.append(f"- **{name}**: {', '.join(parts)}")
 
-    if not found:
+    if not graded and not hidden:
         return "No grade data available for these courses."
+
+    lines = ["# All Course Grades\n"]
+    lines.append(
+        "*Canvas gradebook totals only — official results (Sydney Student) may differ.*\n"
+    )
+    lines.extend(graded)
+    if hidden:
+        lines.append(f"\n## Totals hidden by instructor ({len(hidden)})")
+        lines.append(
+            "*These courses disable student-visible totals; "
+            "use canvas_get_grades or canvas_get_submission_status for per-assignment marks.*"
+        )
+        lines.extend(f"- {name}" for name in hidden)
 
     return "\n".join(lines)
 
