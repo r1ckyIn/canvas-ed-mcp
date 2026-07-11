@@ -7,7 +7,9 @@
       ],
       "env": {
         "CANVAS_API_TOKEN": "your_canvas_api_token_here",
-        "ED_API_TOKEN": "your_ed_api_token_here"
+        "ED_API_TOKEN": "your_ed_api_token_here",
+        "GRADESCOPE_EMAIL": "optional_gradescope_email",
+        "GRADESCOPE_PASSWORD": "optional_gradescope_password"
       }
     }
   }
