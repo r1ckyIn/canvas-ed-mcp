@@ -4453,8 +4453,10 @@ async def gradescope_list_courses(params: GradescopeListCoursesInput) -> str:
         for course_id, course in role_courses.items():
             term = f"{course.semester} {course.year}".strip()
             name = course.full_name or course.name
+            # num_assignments is display text scraped from Gradescope
+            # (e.g. "2 assignments"), not a number
             count = course.num_assignments
-            count_str = f" — {count} assignments" if count else ""
+            count_str = f" — {count}" if count else ""
             lines.append(f"- **{name}** (ID: {course_id}) — {term}{count_str}")
         lines.append("")
 
