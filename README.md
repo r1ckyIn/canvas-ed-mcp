@@ -17,7 +17,7 @@
 
 ## Features
 
-43 tools across Canvas LMS, Ed Discussion, and Gradescope.
+48 tools across Canvas LMS, Ed Discussion, and Gradescope.
 
 ### Canvas — course content (read)
 `canvas_list_courses` · `canvas_get_course` · `canvas_list_announcements` · `canvas_list_assignments` · `canvas_get_grades` · `canvas_get_all_grades` (all courses, one call) · `canvas_list_files` · `canvas_get_file_content` · `canvas_download_file` · `canvas_list_pages` · `canvas_get_page` · `canvas_list_modules` · `canvas_list_module_items` · `canvas_list_calendar` · `canvas_get_syllabus` · `canvas_get_unit_outline_url` · `fetch_unit_outline` (USYD unit outline parser)
@@ -29,10 +29,13 @@
 `canvas_submit_assignment` (text / URL / file upload) · `canvas_post_discussion_entry` (post or reply)
 
 ### Ed Discussion — read
-`ed_get_user_info` · `ed_list_courses` · `ed_list_threads` · `ed_get_thread` · `ed_search_threads` · `ed_list_lessons` · `ed_get_lesson` (slides + content)
+`ed_get_user_info` · `ed_list_courses` · `ed_list_threads` · `ed_get_thread` · `ed_search_threads` · `ed_list_lessons` · `ed_get_lesson` (slides + content) · `ed_list_resources` (lecture slides / links / files by category)
 
 ### Ed Discussion — write
 `ed_post_thread` · `ed_edit_thread` · `ed_post_comment` (comment or answer) · `ed_reply_to_comment` · `ed_accept_answer` · `ed_thread_action` (star/unstar; staff: pin/lock/endorse)
+
+### Ed Workspaces
+`ed_list_workspaces` · `ed_create_workspace` · `ed_update_workspace` (rename / sharing) · `ed_delete_workspace`
 
 Write content is markdown — automatically converted to Ed's XML document format (headings, bold/italic, code spans/blocks, lists, links, math, callouts).
 
@@ -196,13 +199,14 @@ canvas-ed-mcp/
 
 ### 功能特性
 
-共 43 个工具，覆盖 Canvas、Ed Discussion、Gradescope 三个平台：
+共 48 个工具，覆盖 Canvas、Ed Discussion、Gradescope 三个平台：
 
 - **Canvas 读取**：课程 / 公告 / 作业 / 成绩（单课明细 + 全部课程一次拉取）/ 文件 / 页面 / 模块 / 日历 / syllabus / USYD unit outline 解析
 - **Canvas 学生仪表盘**：待办、即将截止、缺交清单、按提交状态分组、我的提交与批改反馈（评语 + rubric）、peer review、讨论区
 - **Canvas 写入**：交作业（文本 / URL / 文件上传）、讨论区发帖回帖
-- **Ed 读取**：课程 / 帖子 / 搜索 / Lessons（含 slides）
+- **Ed 读取**：课程 / 帖子 / 搜索 / Lessons（含 slides）/ Resources（讲义、链接、文件清单）
 - **Ed 写入**：发帖、编辑、评论 / 回答、回复、采纳答案、star 收藏（markdown 自动转 Ed XML 格式）
+- **Ed Workspaces**：列表、创建、改名 / 共享设置、删除
 - **Gradescope 读取**：课程、作业（截止时间 / 提交状态 / 分数）
 - **跨平台**：Unit Outline 与 Canvas 作业对账
 
