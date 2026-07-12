@@ -993,6 +993,100 @@ class EdGetLessonInput(BaseModel):
 
 
 # ============================================================================
+# Input Models - Ed Resources & Workspaces
+# ============================================================================
+
+class EdListResourcesInput(BaseModel):
+    """Input parameters for listing Ed course resources"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    course_id: int = Field(
+        ...,
+        description="Ed course ID (numeric ID, can be obtained from ed_list_courses)",
+        gt=0
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format"
+    )
+
+
+class EdListWorkspacesInput(BaseModel):
+    """Input parameters for listing Ed course workspaces"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    course_id: int = Field(
+        ...,
+        description="Ed course ID (numeric ID, can be obtained from ed_list_courses)",
+        gt=0
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.MARKDOWN,
+        description="Output format"
+    )
+
+
+class EdCreateWorkspaceInput(BaseModel):
+    """Input parameters for creating an Ed workspace"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    course_id: int = Field(
+        ...,
+        description="Ed course ID (numeric ID, can be obtained from ed_list_courses)",
+        gt=0
+    )
+    title: str = Field(
+        ...,
+        description="Workspace title",
+        min_length=1, max_length=200
+    )
+    workspace_type: str = Field(
+        default="general",
+        description=(
+            "Environment type: 'general' (default image), or a language "
+            "environment such as 'c', 'cpp', 'python', 'java', 'nodejs', "
+            "'jupyter', 'rstudio'"
+        ),
+        min_length=1, max_length=30
+    )
+
+
+class EdUpdateWorkspaceInput(BaseModel):
+    """Input parameters for updating an Ed workspace"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    workspace_id: str = Field(
+        ...,
+        description="Workspace ID (opaque string, can be obtained from ed_list_workspaces)",
+        min_length=1, max_length=64
+    )
+    title: Optional[str] = Field(
+        default=None,
+        description="New workspace title",
+        min_length=1, max_length=200
+    )
+    is_public: Optional[bool] = Field(
+        default=None,
+        description="Whether the workspace is visible to everyone in the course"
+    )
+    public_write: Optional[bool] = Field(
+        default=None,
+        description="Whether everyone in the course can edit the workspace"
+    )
+
+
+class EdDeleteWorkspaceInput(BaseModel):
+    """Input parameters for deleting an Ed workspace"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    workspace_id: str = Field(
+        ...,
+        description="Workspace ID (opaque string, can be obtained from ed_list_workspaces)",
+        min_length=1, max_length=64
+    )
+
+
+# ============================================================================
 # Input Models - Gradescope
 # ============================================================================
 
@@ -1308,6 +1402,8 @@ async def ed_api_request(
             response = await client.post(url, headers=headers, json=data)
         elif method == "PUT":
             response = await client.put(url, headers=headers, json=data)
+        elif method == "DELETE":
+            response = await client.delete(url, headers=headers)
         else:
             raise ValueError(f"Unsupported HTTP method: {method}")
 
@@ -2506,6 +2602,59 @@ def format_ed_lesson_detail_markdown(lesson: Dict, include_slides: bool = True) 
                 lines.append("*No content*\n")
     elif not slides:
         lines.append("\n*No slides available. Use ed_get_lesson to fetch full slide content.*")
+
+    return "\n".join(lines)
+
+
+def format_ed_resources_markdown(resources: List[Dict]) -> str:
+    """Format Ed course resources grouped by category"""
+    if not resources:
+        return "No resources found for this course."
+
+    by_category: Dict[str, List[Dict]] = {}
+    for res in resources:
+        by_category.setdefault(res.get('category') or 'Uncategorized', []).append(res)
+
+    lines = [f"# Ed Resources ({len(resources)})\n"]
+    for category, items in by_category.items():
+        lines.append(f"## {category} ({len(items)})")
+        for res in items:
+            name = res.get('name', 'Untitled')
+            parts = [f"ID: {res.get('id')}"]
+            if res.get('session'):
+                parts.append(res['session'])
+            link = res.get('link')
+            if link:
+                lines.append(f"- [{name}]({link}) — {', '.join(parts)}")
+            else:
+                ext = (res.get('extension') or '').lstrip('.').upper()
+                if ext:
+                    parts.append(ext)
+                if res.get('size'):
+                    parts.append(format_file_size(res['size']))
+                lines.append(f"- **{name}** — {', '.join(parts)}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def format_ed_workspaces_markdown(workspaces: List[Dict], users: List[Dict]) -> str:
+    """Format Ed course workspaces with owner names and access flags"""
+    if not workspaces:
+        return "No workspaces found for this course."
+
+    user_names = {u.get('id'): u.get('name', 'Unknown') for u in users}
+    lines = [f"# Ed Workspaces ({len(workspaces)})\n"]
+    for ws in workspaces:
+        owner = user_names.get(ws.get('user_id'), 'Unknown')
+        flags = []
+        if ws.get('role'):
+            flags.append(f"role: {ws['role']}")
+        if ws.get('is_public'):
+            flags.append("public (writable)" if ws.get('public_write') else "public")
+        flag_str = f" [{', '.join(flags)}]" if flags else ""
+        lines.append(f"- **{ws.get('title', 'Untitled')}** by {owner}{flag_str}")
+        lines.append(f"  - ID: `{ws.get('id')}` · created {format_datetime(ws.get('created_at'))}")
 
     return "\n".join(lines)
 
@@ -4418,6 +4567,224 @@ async def ed_get_lesson(params: EdGetLessonInput) -> str:
         return json.dumps(lesson, indent=2, ensure_ascii=False)
 
     return format_ed_lesson_detail_markdown(lesson, params.include_slide_content)
+
+
+# ============================================================================
+# MCP Tools - Ed Resources & Workspaces
+# ============================================================================
+
+@mcp.tool(
+    name="ed_list_resources",
+    annotations={  # type: ignore[arg-type]
+        "title": "Get Ed Resources List",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def ed_list_resources(params: EdListResourcesInput) -> str:
+    """
+    List the Resources tab of an Ed course (lecture slides, links, files).
+
+    Returns resources grouped by category (e.g. Lectures, Links, General)
+    with week/session labels, file types, sizes, and external link URLs.
+
+    Args:
+        params (EdListResourcesInput): Input parameters
+
+    Returns:
+        str: Resource list (Markdown or JSON format)
+    """
+    result = await ed_api_request(f"/courses/{params.course_id}/resources")
+
+    if isinstance(result, dict) and "error" in result:
+        return f"Error: {result['error']}"
+
+    resources = result.get('resources', []) if isinstance(result, dict) else []
+
+    if params.response_format == ResponseFormat.JSON:
+        return json.dumps(resources, indent=2, ensure_ascii=False)
+
+    return format_ed_resources_markdown(resources)
+
+
+@mcp.tool(
+    name="ed_list_workspaces",
+    annotations={  # type: ignore[arg-type]
+        "title": "Get Ed Workspaces List",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def ed_list_workspaces(params: EdListWorkspacesInput) -> str:
+    """
+    List workspaces (cloud IDE instances) of an Ed course.
+
+    Includes your own workspaces and public ones shared by staff.
+    Workspace IDs are opaque strings used by the other workspace tools.
+
+    Args:
+        params (EdListWorkspacesInput): Input parameters
+
+    Returns:
+        str: Workspace list (Markdown or JSON format)
+    """
+    result = await ed_api_request(f"/courses/{params.course_id}/workspaces")
+
+    if isinstance(result, dict) and "error" in result:
+        return f"Error: {result['error']}"
+
+    workspaces = result.get('workspaces', []) if isinstance(result, dict) else []
+    users = result.get('users', []) if isinstance(result, dict) else []
+
+    if params.response_format == ResponseFormat.JSON:
+        return json.dumps({"workspaces": workspaces, "users": users},
+                          indent=2, ensure_ascii=False)
+
+    return format_ed_workspaces_markdown(workspaces, users)
+
+
+@mcp.tool(
+    name="ed_create_workspace",
+    annotations={  # type: ignore[arg-type]
+        "title": "Create Ed Workspace",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": True
+    }
+)
+async def ed_create_workspace(params: EdCreateWorkspaceInput) -> str:
+    """
+    Create a new workspace (cloud IDE instance) in an Ed course.
+
+    The workspace is created immediately under your account. Use
+    workspace_type to pick the environment (e.g. 'c' for a C toolchain,
+    'jupyter' for notebooks); 'general' gives the default image.
+
+    Args:
+        params (EdCreateWorkspaceInput): Input parameters
+
+    Returns:
+        str: Confirmation with the new workspace ID
+    """
+    payload = {
+        "workspace": {
+            "title": params.title,
+            "type": params.workspace_type,
+        }
+    }
+    result = await ed_api_request(
+        f"/courses/{params.course_id}/workspaces", method="POST", data=payload
+    )
+
+    if isinstance(result, dict) and "error" in result:
+        return f"Error: {result['error']}"
+
+    workspace = result.get('workspace', {}) if isinstance(result, dict) else {}
+    lines = ["# Workspace Created\n"]
+    lines.append(f"- **Workspace ID**: `{workspace.get('id')}`")
+    lines.append(f"- **Title**: {workspace.get('title', params.title)}")
+    lines.append(f"- **Type**: {workspace.get('type', params.workspace_type)}")
+
+    return "\n".join(lines)
+
+
+@mcp.tool(
+    name="ed_update_workspace",
+    annotations={  # type: ignore[arg-type]
+        "title": "Update Ed Workspace",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def ed_update_workspace(params: EdUpdateWorkspaceInput) -> str:
+    """
+    Update an Ed workspace you own (rename or change sharing).
+
+    Only provided fields change; everything else is preserved
+    (read-modify-write against the live workspace).
+
+    Args:
+        params (EdUpdateWorkspaceInput): Input parameters
+
+    Returns:
+        str: Confirmation of the update
+    """
+    current = await ed_api_request(f"/workspaces/{params.workspace_id}")
+
+    if isinstance(current, dict) and "error" in current:
+        return f"Error: {current['error']}"
+
+    workspace = current.get('workspace') if isinstance(current, dict) else None
+    if not isinstance(workspace, dict):
+        return "Error: Could not load the current workspace."
+
+    changes: Dict[str, Any] = {}
+    if params.title is not None:
+        changes["title"] = params.title
+    if params.is_public is not None:
+        changes["is_public"] = params.is_public
+    if params.public_write is not None:
+        changes["public_write"] = params.public_write
+
+    if not changes:
+        return "Error: Nothing to change — provide at least one field."
+
+    merged = {**workspace, **changes}
+    result = await ed_api_request(
+        f"/workspaces/{params.workspace_id}", method="PUT",
+        data={"workspace": merged}
+    )
+
+    if isinstance(result, dict) and "error" in result:
+        return f"Error: {result['error']}"
+
+    updated = result.get('workspace', {}) if isinstance(result, dict) else {}
+    lines = ["# Workspace Updated\n"]
+    lines.append(f"- **Workspace ID**: `{params.workspace_id}`")
+    lines.append(f"- **Title**: {updated.get('title', merged.get('title'))}")
+    lines.append(f"- **Changed fields**: {', '.join(changes.keys())}")
+
+    return "\n".join(lines)
+
+
+@mcp.tool(
+    name="ed_delete_workspace",
+    annotations={  # type: ignore[arg-type]
+        "title": "Delete Ed Workspace",
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def ed_delete_workspace(params: EdDeleteWorkspaceInput) -> str:
+    """
+    Permanently delete an Ed workspace you own.
+
+    This removes the workspace and all files inside it and cannot be
+    undone. Only delete workspaces you created.
+
+    Args:
+        params (EdDeleteWorkspaceInput): Input parameters
+
+    Returns:
+        str: Confirmation of the deletion
+    """
+    result = await ed_api_request(
+        f"/workspaces/{params.workspace_id}", method="DELETE"
+    )
+
+    if isinstance(result, dict) and "error" in result:
+        return f"Error: {result['error']}"
+
+    return f"Workspace `{params.workspace_id}` deleted."
 
 
 # ============================================================================
