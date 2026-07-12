@@ -1011,6 +1011,21 @@ class EdListResourcesInput(BaseModel):
     )
 
 
+class EdDownloadResourceInput(BaseModel):
+    """Input parameters for downloading an Ed course resource file"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
+
+    resource_id: int = Field(
+        ...,
+        description="Ed resource ID (numeric ID from ed_list_resources). Only file resources are downloadable; link resources have no file to fetch.",
+        gt=0
+    )
+    save_path: Optional[str] = Field(
+        default=None,
+        description="Full file path to save. Defaults to current directory + the resource's name and extension."
+    )
+
+
 class EdListWorkspacesInput(BaseModel):
     """Input parameters for listing Ed course workspaces"""
     model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
@@ -5163,6 +5178,99 @@ async def canvas_download_file(params: DownloadFileInput) -> str:
     lines.append(f"- **File**: {display_name}")
     lines.append(f"- **Size**: {size_str}")
     lines.append(f"- **Type**: {content_type}")
+    lines.append(f"- **Saved to**: {save_path}")
+    lines.append("")
+    lines.append("*Use Claude's Read tool to view the file content.*")
+
+    return "\n".join(lines)
+
+
+@mcp.tool(
+    name="ed_download_resource",
+    annotations={  # type: ignore[arg-type]
+        "title": "Download Ed Resource to Local",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def ed_download_resource(params: EdDownloadResourceInput) -> str:
+    """
+    Download an Ed course resource file (lecture slides, handouts) to the local filesystem.
+
+    Takes a resource_id from ed_list_resources and saves the file locally.
+    Only file resources are downloadable; link resources (external URLs) have no
+    file to fetch — open their link directly instead. Supports files up to 50MB.
+
+    Args:
+        params (EdDownloadResourceInput): Input parameters
+
+    Returns:
+        str: Download result with file path and details
+    """
+    from urllib.parse import quote
+
+    # Get resource metadata (name, extension, size)
+    meta = await ed_api_request(f"/resources/{params.resource_id}")
+    if isinstance(meta, dict) and "error" in meta:
+        return f"Error: {meta['error']}"
+
+    resource = meta.get("resource", {}) if isinstance(meta, dict) else {}
+    name = resource.get("name", "resource")
+    extension = resource.get("extension") or ""
+    file_size = resource.get("size", 0)
+
+    # Link resources have no downloadable file
+    if resource.get("link"):
+        return (f"Error: '{name}' is a link resource (URL: {resource['link']}), "
+                "not a downloadable file.")
+
+    if file_size and file_size > MAX_DOWNLOAD_SIZE:
+        size_mb = file_size / (1024 * 1024)
+        return f"Error: File too large ({size_mb:.1f}MB). Maximum allowed size is 50MB."
+
+    display_name = f"{name}{extension}"
+
+    # Determine save path
+    if params.save_path:
+        save_path = params.save_path
+    else:
+        save_path = os.path.join(os.getcwd(), display_name)
+
+    parent_dir = os.path.dirname(save_path)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
+
+    # Ed serves the file via POST to the download route with a Bearer token.
+    # The filename path segment must be non-empty but its value is ignored.
+    filename_segment = quote(display_name, safe="") or "file"
+    url = f"{ED_BASE_URL}/resources/{params.resource_id}/download/{filename_segment}"
+    client = get_general_client()
+    try:
+        headers = get_ed_headers()
+        async with client.stream("POST", url, headers=headers) as response:
+            response.raise_for_status()
+            content_type = response.headers.get("content-type", "")
+            with open(save_path, "wb") as f:
+                async for chunk in response.aiter_bytes(chunk_size=8192):
+                    f.write(chunk)
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: Download failed (HTTP {e.response.status_code})"
+    except httpx.TimeoutException:
+        return "Error: Download timed out. The file may be too large."
+    except Exception:
+        return "Error: Failed to download file."
+
+    actual_size = os.path.getsize(save_path)
+    size_str = format_file_size(actual_size)
+
+    lines = ["# Ed Resource Downloaded Successfully\n"]
+    lines.append(f"- **File**: {display_name}")
+    lines.append(f"- **Size**: {size_str}")
+    if content_type:
+        lines.append(f"- **Type**: {content_type}")
     lines.append(f"- **Saved to**: {save_path}")
     lines.append("")
     lines.append("*Use Claude's Read tool to view the file content.*")
