@@ -17,19 +17,19 @@
 
 ## Features
 
-48 tools across Canvas LMS, Ed Discussion, and Gradescope.
+49 tools across Canvas LMS, Ed Discussion, and Gradescope.
 
 ### Canvas — course content (read)
-`canvas_list_courses` · `canvas_get_course` · `canvas_list_announcements` · `canvas_list_assignments` · `canvas_get_grades` · `canvas_get_all_grades` (all courses, one call) · `canvas_list_files` · `canvas_get_file_content` · `canvas_download_file` · `canvas_list_pages` · `canvas_get_page` · `canvas_list_modules` · `canvas_list_module_items` · `canvas_list_calendar` · `canvas_get_syllabus` · `canvas_get_unit_outline_url` · `fetch_unit_outline` (USYD unit outline parser)
+`canvas_list_courses` · `canvas_get_course` · `canvas_list_announcements` · `canvas_list_assignments` · `canvas_get_grades` · `canvas_list_files` · `canvas_get_file_content` · `canvas_list_pages` · `canvas_get_page` · `canvas_list_modules` · `canvas_list_module_items` · `canvas_get_unit_outline_url` · `fetch_unit_outline` (USYD unit outline parser) · `canvas_list_calendar` · `canvas_get_syllabus` · `canvas_download_file`
 
 ### Canvas — student dashboard (read)
-`canvas_get_todo` · `canvas_get_upcoming` · `canvas_get_missing_submissions` · `canvas_get_submission_status` (per-course, grouped by state) · `canvas_get_my_submission` (marker feedback + rubric) · `canvas_get_peer_reviews` · `canvas_list_discussions` · `canvas_get_discussion` (full threaded view)
+`canvas_get_todo` · `canvas_get_upcoming` · `canvas_get_missing_submissions` · `canvas_get_submission_status` (per-course, grouped by state) · `canvas_list_discussions` · `canvas_get_discussion` (full threaded view) · `canvas_get_all_grades` (all courses, one call) · `canvas_get_my_submission` (marker feedback + rubric) · `canvas_get_peer_reviews`
 
 ### Canvas — write
 `canvas_submit_assignment` (text / URL / file upload) · `canvas_post_discussion_entry` (post or reply)
 
 ### Ed Discussion — read
-`ed_get_user_info` · `ed_list_courses` · `ed_list_threads` · `ed_get_thread` · `ed_search_threads` · `ed_list_lessons` · `ed_get_lesson` (slides + content) · `ed_list_resources` (lecture slides / links / files by category)
+`ed_get_user_info` · `ed_list_courses` · `ed_list_threads` · `ed_get_thread` · `ed_search_threads` · `ed_list_lessons` · `ed_get_lesson` (slides + content) · `ed_list_resources` (lecture slides / links / files by category) · `ed_download_resource` (save resource files locally, up to 50MB)
 
 ### Ed Discussion — write
 `ed_post_thread` · `ed_edit_thread` · `ed_post_comment` (comment or answer) · `ed_reply_to_comment` · `ed_accept_answer` · `ed_thread_action` (star/unstar; staff: pin/lock/endorse)
@@ -122,6 +122,108 @@ Search for threads about "assignment" in Ed course
 Get detailed content and replies for Ed thread ID 67890
 ```
 
+## Tool Reference
+
+All 49 tools with their input parameters, taken from the Pydantic input models in `canvas_ed_mcp.py` (same grouping as [Features](#features)). Enum types:
+
+- `ResponseFormat`: `markdown` (default) or `json`
+- `EnrollmentState`: `active` (default), `completed`, or `all`
+- `SubmissionType`: `online_text_entry`, `online_url`, or `online_upload`
+- `ThreadFilter`: `all` (default), `unread`, `unanswered`, or `starred`
+- `ThreadSort`: `new` (default), `old`, `top`, or `hot`
+- `EdThreadType`: `post`, `question` (default), or `announcement`
+- `EdCommentType`: `comment` (default) or `answer`
+- `EdThreadAction`: `star`, `unstar`, `pin`, `unpin`, `lock`, `unlock`, `endorse`, or `unendorse`
+
+### Canvas — course content (read)
+
+| Tool | Parameters | Description |
+| --- | --- | --- |
+| `canvas_list_courses` | `enrollment_state` (EnrollmentState, optional); `limit` (int, optional); `response_format` (ResponseFormat, optional) | Get all courses the current user is enrolled in on Canvas. |
+| `canvas_get_course` | `course_id` (str, required); `response_format` (ResponseFormat, optional) | Get detailed information for a specific Canvas course. |
+| `canvas_list_announcements` | `course_id` (str, required); `limit` (int, optional); `response_format` (ResponseFormat, optional) | Get announcements for a specific Canvas course. |
+| `canvas_list_assignments` | `course_id` (str, required); `include_submissions` (bool, optional); `limit` (int, optional); `response_format` (ResponseFormat, optional) | Get all assignments for a specific Canvas course. |
+| `canvas_get_grades` | `course_id` (str, optional); `include_assignment_groups` (bool, optional); `response_format` (ResponseFormat, optional) | Get current user's grades on Canvas. |
+| `canvas_list_files` | `course_id` (str, required); `content_types` (List[str], optional); `sort` (str, optional); `search_term` (str, optional); `limit` (int, optional); `response_format` (ResponseFormat, optional) | Get the file list for a Canvas course. |
+| `canvas_get_file_content` | `file_id` (str, required); `response_format` (ResponseFormat, optional) | Get file metadata and download URL for a Canvas file. |
+| `canvas_list_pages` | `course_id` (str, required); `sort` (str, optional); `search_term` (str, optional); `limit` (int, optional); `response_format` (ResponseFormat, optional) | Get the wiki page list for a Canvas course. |
+| `canvas_get_page` | `course_id` (str, required); `page_url_or_id` (str, required); `response_format` (ResponseFormat, optional) | Get the full content of a Canvas wiki page. |
+| `canvas_list_modules` | `course_id` (str, required); `include_items` (bool, optional); `search_term` (str, optional); `limit` (int, optional); `response_format` (ResponseFormat, optional) | Get the module list for a Canvas course (weekly/topic structure). |
+| `canvas_list_module_items` | `course_id` (str, required); `module_id` (str, required); `include_content_details` (bool, optional); `response_format` (ResponseFormat, optional) | Get items within a specific Canvas module. |
+| `canvas_get_unit_outline_url` | `course_id` (str, required); `response_format` (ResponseFormat, optional) | Get the Unit Outline URL for a Canvas course (University of Sydney). |
+| `fetch_unit_outline` | `unit_outline_url` (str, required); `response_format` (ResponseFormat, optional) | Fetch and parse a University of Sydney Unit Outline page. |
+| `canvas_list_calendar` | `context_codes` (List[str], optional); `event_type` (str, optional); `start_date` (str, optional); `end_date` (str, optional); `limit` (int, optional); `response_format` (ResponseFormat, optional) | Get calendar events and assignment due dates from Canvas. |
+| `canvas_get_syllabus` | `course_id` (str, required); `response_format` (ResponseFormat, optional) | Get the syllabus for a Canvas course. |
+| `canvas_download_file` | `file_id` (str, required); `save_path` (str, optional) | Download a Canvas file to the local filesystem. |
+
+### Canvas — student dashboard (read)
+
+| Tool | Parameters | Description |
+| --- | --- | --- |
+| `canvas_get_todo` | `limit` (int, optional); `response_format` (ResponseFormat, optional) | Get the current user's Canvas to-do list across all courses. |
+| `canvas_get_upcoming` | `response_format` (ResponseFormat, optional) | Get the current user's upcoming Canvas events and assignment deadlines. |
+| `canvas_get_missing_submissions` | `course_ids` (List[str], optional); `limit` (int, optional); `response_format` (ResponseFormat, optional) | Get assignments that are past due and still unsubmitted. |
+| `canvas_get_submission_status` | `course_id` (str, required); `response_format` (ResponseFormat, optional) | Get per-assignment submission status for a Canvas course. |
+| `canvas_list_discussions` | `course_id` (str, required); `limit` (int, optional); `response_format` (ResponseFormat, optional) | Get discussion topics for a Canvas course. |
+| `canvas_get_discussion` | `course_id` (str, required); `topic_id` (str, required); `response_format` (ResponseFormat, optional) | Get a Canvas discussion topic with its full threaded replies. |
+| `canvas_get_all_grades` | `enrollment_state` (EnrollmentState, optional); `response_format` (ResponseFormat, optional) | Get current grades for ALL your Canvas courses in one call. |
+| `canvas_get_my_submission` | `course_id` (str, required); `assignment_id` (str, required); `response_format` (ResponseFormat, optional) | Get your own submission for an assignment, including marker feedback: score, grade, submission comments, and rubric assessment. |
+| `canvas_get_peer_reviews` | `course_id` (str, required); `response_format` (ResponseFormat, optional) | Get peer reviews assigned TO YOU in a Canvas course. |
+
+### Canvas — write
+
+| Tool | Parameters | Description |
+| --- | --- | --- |
+| `canvas_submit_assignment` | `course_id` (str, required); `assignment_id` (str, required); `submission_type` (SubmissionType, required); `body` (str, optional); `url` (str, optional); `file_paths` (List[str], optional); `comment` (str, optional) | Submit a Canvas assignment on behalf of the current user. |
+| `canvas_post_discussion_entry` | `course_id` (str, required); `topic_id` (str, required); `message` (str, required); `reply_to_entry_id` (str, optional) | Post a new entry (or a reply to an existing entry) in a Canvas discussion. |
+
+### Ed Discussion — read
+
+| Tool | Parameters | Description |
+| --- | --- | --- |
+| `ed_get_user_info` | `response_format` (ResponseFormat, optional) | Get current Ed Discussion user information. |
+| `ed_list_courses` | `year` (str, optional); `session` (str, optional); `response_format` (ResponseFormat, optional) | Get all courses the current user has on Ed Discussion. |
+| `ed_list_threads` | `course_id` (int, required); `limit` (int, optional); `filter_type` (ThreadFilter, optional); `category` (str, optional); `sort` (ThreadSort, optional); `offset` (int, optional); `response_format` (ResponseFormat, optional) | Get discussion thread list for a specific Ed course. |
+| `ed_get_thread` | `thread_id` (int, required); `response_format` (ResponseFormat, optional) | Get detailed content of a single Ed Discussion thread, including all replies and answers. |
+| `ed_search_threads` | `course_id` (int, required); `query` (str, required); `limit` (int, optional); `response_format` (ResponseFormat, optional) | Search threads in an Ed Discussion course. |
+| `ed_list_lessons` | `course_id` (int, required); `response_format` (ResponseFormat, optional) | Get the lesson list for an Ed course, grouped by module. |
+| `ed_get_lesson` | `lesson_id` (int, required); `include_slide_content` (bool, optional); `response_format` (ResponseFormat, optional) | Get detailed content of a single Ed Lesson, including all slides. |
+| `ed_list_resources` | `course_id` (int, required); `response_format` (ResponseFormat, optional) | List the Resources tab of an Ed course (lecture slides, links, files). |
+| `ed_download_resource` | `resource_id` (int, required); `save_path` (str, optional) | Download an Ed course resource file (lecture slides, handouts) to the local filesystem. |
+
+### Ed Discussion — write
+
+| Tool | Parameters | Description |
+| --- | --- | --- |
+| `ed_post_thread` | `course_id` (int, required); `title` (str, required); `content` (str, required); `thread_type` (EdThreadType, optional); `category` (str, required); `subcategory` (str, optional); `is_private` (bool, optional); `is_anonymous` (bool, optional) | Post a new thread to an Ed Discussion course forum. |
+| `ed_edit_thread` | `thread_id` (int, required); `title` (str, optional); `content` (str, optional); `category` (str, optional); `subcategory` (str, optional) | Edit an existing Ed Discussion thread (typically your own). |
+| `ed_post_comment` | `thread_id` (int, required); `content` (str, required); `comment_type` (EdCommentType, optional); `is_private` (bool, optional); `is_anonymous` (bool, optional) | Post a comment or an answer on an Ed Discussion thread. |
+| `ed_reply_to_comment` | `comment_id` (int, required); `content` (str, required); `is_private` (bool, optional); `is_anonymous` (bool, optional) | Reply to an existing comment on an Ed Discussion thread. |
+| `ed_accept_answer` | `thread_id` (int, required); `comment_id` (int, required) | Accept an answer on your Ed question thread, marking it resolved. |
+| `ed_thread_action` | `thread_id` (int, required); `action` (EdThreadAction, required) | Toggle a state on an Ed thread: star/unstar (student bookmark), pin/unpin, lock/unlock, endorse/unendorse (these six require staff role). |
+
+### Ed Workspaces
+
+| Tool | Parameters | Description |
+| --- | --- | --- |
+| `ed_list_workspaces` | `course_id` (int, required); `response_format` (ResponseFormat, optional) | List workspaces (cloud IDE instances) of an Ed course. |
+| `ed_create_workspace` | `course_id` (int, required); `title` (str, required); `workspace_type` (str, optional) | Create a new workspace (cloud IDE instance) in an Ed course. |
+| `ed_update_workspace` | `workspace_id` (str, required); `title` (str, optional); `is_public` (bool, optional); `public_write` (bool, optional) | Update an Ed workspace you own (rename or change sharing). |
+| `ed_delete_workspace` | `workspace_id` (str, required) | Permanently delete an Ed workspace you own. |
+
+### Gradescope (read)
+
+| Tool | Parameters | Description |
+| --- | --- | --- |
+| `gradescope_list_courses` | `response_format` (ResponseFormat, optional) | Get all Gradescope courses for the configured account. |
+| `gradescope_list_assignments` | `course_id` (str, required); `response_format` (ResponseFormat, optional) | Get all assignments in a Gradescope course with due dates, submission status, and grades. |
+
+### Cross-platform
+
+| Tool | Parameters | Description |
+| --- | --- | --- |
+| `verify_assessment_coverage` | `course_id` (str, required); `response_format` (ResponseFormat, optional) | Cross-verify assessment coverage between Unit Outline and Canvas assignments. |
+
 ## API Token Information
 
 ### Canvas API Token
@@ -199,12 +301,12 @@ canvas-ed-mcp/
 
 ### 功能特性
 
-共 48 个工具，覆盖 Canvas、Ed Discussion、Gradescope 三个平台：
+共 49 个工具，覆盖 Canvas、Ed Discussion、Gradescope 三个平台：
 
 - **Canvas 读取**：课程 / 公告 / 作业 / 成绩（单课明细 + 全部课程一次拉取）/ 文件 / 页面 / 模块 / 日历 / syllabus / USYD unit outline 解析
 - **Canvas 学生仪表盘**：待办、即将截止、缺交清单、按提交状态分组、我的提交与批改反馈（评语 + rubric）、peer review、讨论区
 - **Canvas 写入**：交作业（文本 / URL / 文件上传）、讨论区发帖回帖
-- **Ed 读取**：课程 / 帖子 / 搜索 / Lessons（含 slides）/ Resources（讲义、链接、文件清单）
+- **Ed 读取**：课程 / 帖子 / 搜索 / Lessons（含 slides）/ Resources（讲义、链接、文件清单，文件可下载到本地）
 - **Ed 写入**：发帖、编辑、评论 / 回答、回复、采纳答案、star 收藏（markdown 自动转 Ed XML 格式）
 - **Ed Workspaces**：列表、创建、改名 / 共享设置、删除
 - **Gradescope 读取**：课程、作业（截止时间 / 提交状态 / 分数）
